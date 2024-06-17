@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model
+from .utils.data_tools import split_data_Kfold
 
 
 class cpl_mixVAE:
@@ -55,6 +56,54 @@ class cpl_mixVAE:
             self.netA.load_state_dict(self.aug_model['netA'])
             self.netA = self.netA.to(self.device)
 
+    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0):
+        self.batch_size = batch_size
+
+        train_inds, test_inds = split_data_Kfold(label, k_fold)
+        train_ind = train_inds[fold].astype(int)
+        test_ind = test_inds[fold].astype(int)
+
+        train_set_torch = torch.FloatTensor(dataset[train_ind, :])
+        train_ind_torch = torch.FloatTensor(train_ind)
+        if n_aug_smp > 0:
+            train_set = train_set_torch.clone()
+            train_set_ind = train_ind_torch.clone()
+            for n_a in range(n_aug_smp):
+                if self.aug_file:
+                    noise = torch.randn(train_set_torch.shape[0], self.aug_param['num_n'])
+                    if self.gpu:
+                        _, gen_data = self.netA(train_set_torch.cuda(self.device), noise.cuda(self.device), True, self.device)
+                    else:
+                        _, gen_data = self.netA(train_set_torch, noise, True, self.device)
+
+                    train_set = torch.cat((train_set, gen_data.cpu().detach()), 0)
+
+                else:
+                    train_set = torch.cat((train_set, train_set_torch), 0)
+                train_set_ind = torch.cat((train_set_ind, train_ind_torch), 0)
+
+            train_data = TensorDataset(train_set, train_set_ind)
+        else:
+            train_data = TensorDataset(train_set_torch, train_ind_torch)
+
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True)
+
+        val_set_torch = torch.FloatTensor(dataset[test_ind, :])
+        val_ind_torch = torch.FloatTensor(test_ind)
+        validation_data = TensorDataset(val_set_torch, val_ind_torch)
+        validation_loader = DataLoader(validation_data, batch_size=batch_size, shuffle=True, drop_last=False, pin_memory=True)
+
+        test_set_torch = torch.FloatTensor(dataset[test_ind, :])
+        test_ind_torch = torch.FloatTensor(test_ind)
+        test_data = TensorDataset(test_set_torch, test_ind_torch)
+        test_loader = DataLoader(test_data, batch_size=1, shuffle=True, drop_last=False, pin_memory=True)
+
+        data_set_troch = torch.FloatTensor(dataset)
+        all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
+        all_data = TensorDataset(data_set_troch, all_ind_torch)
+        alldata_loader = DataLoader(all_data, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True)
+
+        return alldata_loader, train_loader, validation_loader, test_loader
 
     def init_model(self, n_categories, state_dim, input_dim, fc_dim=100, lowD_dim=10, x_drop=0.5, s_drop=0.2, lr=.001,
                    lam=1, lam_pc=1, n_arm=2, temp=1., tau=0.005, beta=1., hard=False, variational=True, ref_prior=False,
@@ -295,6 +344,25 @@ class cpl_mixVAE:
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
                 print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
+
+                if self.save and (epoch > 0) and (epoch % 1000 == 0):
+                    trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
+                    torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                    bias = self.model.fcc[0].bias.detach().cpu().numpy()
+                    mask = range(len(bias))
+                    prune_indx = []
+                    # plot the learning curve of the network
+                    fig, ax = plt.subplots()
+                    ax.plot(range(n_epoch), train_loss, label='Training')
+                    ax.plot(range(n_epoch), validation_loss, label='Validation')
+                    ax.set_xlabel('# epoch', fontsize=16)
+                    ax.set_ylabel('loss value', fontsize=16)
+                    ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
+                    ax.spines['right'].set_visible(False)
+                    ax.spines['top'].set_visible(False)
+                    ax.legend()
+                    ax.figure.savefig(self.folder + f'/model/learning_curve_epoch_{epoch}.png')
+                    plt.close("all")
 
             if self.save and n_epoch > 0:
                 trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
