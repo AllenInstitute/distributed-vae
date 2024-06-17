@@ -1,0 +1,12 @@
+scipy
+pandas
+seaborn
+scikit-learn
+scanpy
+jupyterlab
+flatten-json
+feather-format
+h5py
+hdf5plugin
+toml
+tensorboard

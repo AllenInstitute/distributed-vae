@@ -1,0 +1,64 @@
+# -----------------------------------------------------------------------------
+[project]
+name = "mmidas"
+description = "Couple Mixture VAE models for single cell data"
+version = "0.1.0"
+requires-python = ">= 3.8"
+#requires-pytorch = ">= 2.0"
+
+authors = [
+  {name = "Yeganeh Marghi", email = "yeganeh.marghi@alleninstitute.org", affiliation = "Allen Institute for Brain Science"},
+  name = "Rohan Gala", email = "rohang@alleninstitute.org", affiliation = "Allen Institute for Brain Science"}
+]
+
+readme = "README.md"
+
+# -----------------------------------------------------------------------------
+[paths]
+main_dir = "./"
+data_path = "data/"
+saving_path = "results/"
+
+# -----------------------------------------------------------------------------
+[smartseq_files]
+anndata_file = "Mouse_ALM-VISp_cpm.h5ad"
+htree_file = "tree_Mouse_ALM-VISp_2018.csv"
+ref_gene_file = "genes_SS_ALM-VISp.csv"
+aug_model = ""
+trained_model = "run_1_K_120_Sdim_2_aug_True_lr_0.001_n_arm_2_nbatch_5000_nepoch_10000_nepochP_1000"
+
+# -----------------------------------------------------------------------------
+[10x_gaba_files]
+anndata_file = ""
+htree_file = "tree_Mouse_cortex_2020.csv"
+aug_model = ""
+trained_model = ""
+
+# -----------------------------------------------------------------------------
+[10x_glum_files]
+anndata_file = ""
+htree_file = "tree_Mouse_cortex_2020.csv"
+aug_model = ""
+trained_model = ""
+
+# -----------------------------------------------------------------------------
+[patchseq_files]
+anndata_file = ""
+htree_file = "tree_Mouse_ALM-VISp_2018.csv"
+ref_gene_file = "genes_Patchseq.csv"
+aug_model = ""
+trained_model = ""
+
+# -----------------------------------------------------------------------------
+[AD_files]
+anndata_file = ""
+htree_file = "tree_human_MTG_2023.csv"
+aug_model = ""
+trained_model = ""
+
+
+
+
+
+
+
