@@ -43,7 +43,7 @@ class cpl_mixVAE:
             else:
                 self.device = torch.device(torch.cuda.current_device())
                 torch.cuda.set_device(self.device)
-                print('--->' + torch.cuda.get_device_name(torch.cuda.current_device()))
+                print('---> ' + torch.cuda.get_device_name(torch.cuda.current_device()))
 
         if self.aug_file:
             self.aug_model = torch.load(self.aug_file)
@@ -348,22 +348,7 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
-                    bias = self.model.fcc[0].bias.detach().cpu().numpy()
-                    mask = range(len(bias))
-                    prune_indx = []
-                    # plot the learning curve of the network
-                    fig, ax = plt.subplots()
-                    ax.plot(range(n_epoch), train_loss, label='Training')
-                    ax.plot(range(n_epoch), validation_loss, label='Validation')
-                    ax.set_xlabel('# epoch', fontsize=16)
-                    ax.set_ylabel('loss value', fontsize=16)
-                    ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
-                    ax.spines['right'].set_visible(False)
-                    ax.spines['top'].set_visible(False)
-                    ax.legend()
-                    ax.figure.savefig(self.folder + f'/model/learning_curve_epoch_{epoch}.png')
-                    plt.close("all")
-
+                    
             if self.save and n_epoch > 0:
                 trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
