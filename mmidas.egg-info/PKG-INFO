@@ -1,0 +1,12 @@
+Metadata-Version: 1.1
+Name: mmidas
+Version: 2.0
+Summary: Couple Mixture VAE models for single cell data
+Home-page: UNKNOWN
+Author: Yeganeh Marghi
+Author-email: yeganeh.marghi@alleninstitute.org
+License: UNKNOWN
+Description: UNKNOWN
+Keywords: VAE,latent representation,single-cell,unimodal,multiodal,mixture model,coupled model
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3

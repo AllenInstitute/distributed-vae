@@ -14,7 +14,7 @@ def get_paths(toml_file, sub_file='files', verbose=False):
         config: dict
     """
 
-    package_dir = Path().resolve().parents[1]
+    package_dir = Path().resolve() #.parents[1]
     config_file = package_dir / toml_file
     print(config_file)
 

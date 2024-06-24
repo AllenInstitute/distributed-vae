@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="mmidas",
-    version="0.1.0",
+    version="2.0",
     author="Yeganeh Marghi",
     author_email="yeganeh.marghi@alleninstitute.org",
     description="Couple Mixture VAE models for single cell data",
