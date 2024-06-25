@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.io as sio
 import toml
+import requests
 from pathlib import Path
 from sklearn.preprocessing import normalize
 
@@ -96,41 +97,22 @@ def reorder_genes(x, chunksize=1000, eps=1e-1):
     return g_ind[::-1]
 
 
-def split_data_Kfold(class_label, K_fold):
-    uniq_label = np.unique(class_label)
-    label_train_indices = [[] for ll in uniq_label]
-    label_test_indices = [[] for ll in uniq_label]
+def download_file(url, local_filename, chunk_size=10000):
+    """Download a file from a URL and save it locally
 
-    # Split the the data to train and test keeping the same ratio for all classes
-    for i_l, label in enumerate(uniq_label):
-        label_indices = np.where(class_label == label)[0]
-        test_size = int(( 1 /K_fold) * len(label_indices))
-
-        # Prepare the test and training indices for K folds
-        for fold in range(K_fold):
-            ind_0 = fold * test_size
-            ind_1 = (1 + fold) * test_size
-            tmp_ind = list(label_indices)
-            label_test_indices[i_l].append(tmp_ind[ind_0:ind_1])
-            del tmp_ind[ind_0:ind_1]
-            label_train_indices[i_l].append(tmp_ind)
-    test_ind = [[] for k in range(K_fold)]
-    train_ind = [[] for k in range(K_fold)]
-    for fold in range(K_fold):
-        for i_l in range(len(uniq_label)):
-            test_ind[fold].append(label_test_indices[i_l][fold])
-            train_ind[fold].append(label_train_indices[i_l][fold])
-        test_ind[fold] = np.concatenate(test_ind[fold])
-        train_ind[fold] = np.concatenate(train_ind[fold])
-        # Shuffle the indices
-        index = np.arange(len(test_ind[fold]))
-        np.random.shuffle(index)
-        test_ind[fold] = test_ind[fold][index]
-        index = np.arange(len(train_ind[fold]))
-        np.random.shuffle(index)
-        train_ind[fold] = train_ind[fold][index]
-
-    return train_ind, test_ind
+    Args:
+        url (str): URL of the file to download
+        local_filename (str): Local path to save the file
+        chunk_size (int, optional): Size of the chunks to download
+    """
+    # Send a HTTP GET request to the URL
+    with requests.get(url, stream=True) as response:
+        response.raise_for_status()  # Check if the request was successful
+        # Open a local file in binary write mode
+        with open(local_filename, 'wb') as file:
+            # Stream the content and write it in chunks to the local file
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                file.write(chunk)
 
 
 
