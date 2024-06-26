@@ -459,3 +459,7 @@ def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
     l_zinb = (loss_zero_counts + loss_nonzero_counts).mean()
 
     return l_zinb
+
+
+def mmidas_loss():
+    ...
