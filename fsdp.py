@@ -31,6 +31,8 @@ from tqdm import trange
 
 import mmidas
 
+import wandb
+
 class Net(nn.Module):
   def __init__(self):
     super(Net, self).__init__()
@@ -159,6 +161,8 @@ def main(args):
   model = Net().to(args.device)
   optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
   scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+
+  run = None
   for epoch in trange(1, args.epochs + 1):
      train(args, model, args.device, -1, train_loader, optimizer, epoch, sampler=None, parallel=not args.no_parallel)
      test(model, args.device, -1, test_loader, parallel=not args.no_parallel)
@@ -275,6 +279,10 @@ if __name__ == '__main__':
     parser.add_argument('--wandb', action='store_true', default=False, help='log to wandb') # TODO
     parser.add_argument('--device', type=str, default='cuda', help='device to use (default: cuda)')
     args = parser.parse_args()
+
+    if args.wandb:
+      args.id = wandb.util.random_string(4)
+      dprint(f"wandb id: {args.id}")
 
     assert not (args.no_parallel and args.multinode), "cannot disable parallelism and enable multinode training"
     assert not (args.no_parallel and (args.device == 'cpu' or args.device == 'mps')), "cannot disable parallelism and use cpu or mps"
