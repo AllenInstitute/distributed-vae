@@ -70,13 +70,11 @@ def trivial(rank, world_size, args):
   cleanup()
   return 0
 
-
 def dprint(*args, **kwargs):
   if __debug__:
     print(*args, **kwargs)
 
 def print_gpus():
-  dprint(f"cuda available: {torch.cuda.is_available()}")
   dprint(f"gpus: {torch.cuda.device_count()}")
   for i in range(torch.cuda.device_count()):
     dprint(f"\tgpu {i}: {torch.cuda.get_device_name(i)}")
@@ -84,7 +82,9 @@ def print_gpus():
 def eparams(model):
   return list(model.parameters())
 
-def setup(rank, world_size, backend='nccl', is_multinode=False, timeout=120):
+def setup(rank, world_size, backend='nccl', is_multinode=False, timeout=120, parallel=True):
+  if not parallel:
+    return
   if is_multinode:
     os.environ['MASTER_ADDR'] = os.environ['SLURM_SUBMIT_HOST']
     os.environ['MASTER_PORT'] = os.getenv('MASTER_PORT', '12355')
@@ -97,8 +97,81 @@ def setup(rank, world_size, backend='nccl', is_multinode=False, timeout=120):
   assert not ("A100" in torch.cuda.get_device_name(rank) and backend == 'nccl'), "a100 doesn't support nccl"
   dist.init_process_group(backend=backend, rank=rank, world_size=world_size, timeout=timedelta(seconds=timeout))
 
-def cleanup():
+def cleanup(parallel=True):
+  if not parallel:
+    return
   dist.destroy_process_group()
+
+def rank2dev(rank):
+  if type(rank) == int:
+    return f"cuda:{rank}"
+  return rank
+
+def make_data_loaders(task, parallel, batch_size, test_batch_size, **kwargs):
+  match task, parallel:
+    case 'mnist', True:
+      rank = kwargs['rank']
+      world_size = kwargs['world_size']
+
+      transform = transforms.Compose([
+          transforms.ToTensor(),
+          transforms.Normalize((0.1307,), (0.3081,))
+      ])
+      dataset1 = datasets.MNIST('../data', train=True, download=True, transform=transform)
+      dataset2 = datasets.MNIST('../data', train=False, transform=transform)
+      sampler1 = DistributedSampler(dataset1, rank=rank, num_replicas=world_size, shuffle=True)
+      sampler2 = DistributedSampler(dataset2, rank=rank, num_replicas=world_size)
+      train_kwargs = {'batch_size': batch_size, 'sampler': sampler1}
+      test_kwargs = {'batch_size': test_batch_size, 'sampler': sampler2}
+      cuda_kwargs = {'num_workers': 2, 'pin_memory': True, 'shuffle': False}
+      train_kwargs.update(cuda_kwargs)
+      test_kwargs.update(cuda_kwargs)
+      train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
+      test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
+      return train_loader, test_loader, sampler1
+    case 'mnist', False:
+      transform = transforms.Compose([
+          transforms.ToTensor(),
+          transforms.Normalize((0.1307,), (0.3081,))
+      ])
+      dataset1 = datasets.MNIST('../data', train=True, download=True, transform=transform)
+      dataset2 = datasets.MNIST('../data', train=False, transform=transform)
+      train_loader = torch.utils.data.DataLoader(dataset1, batch_size=batch_size, shuffle=True)
+      test_loader = torch.utils.data.DataLoader(dataset2, batch_size=test_batch_size, shuffle=False)
+      return train_loader, test_loader, None
+    case 'mmidas', True:
+      raise NotImplementedError # TODO
+    case 'mmidas', False:
+      raise NotImplementedError # TODO
+  
+def make_model(name, parallel, rank=None):
+  model = None
+  dest = None
+  if rank == 0 or not parallel:
+    dprint(f"making model: {name}")
+  match name:
+    case 'mnist':
+      model = Net()
+    case 'mmidas':
+      raise NotImplementedError # TODO
+  return model.to(rank)
+
+def transform_model(model, parallel, is_fsdp, rank, no_wrap=False, min_params=1000, offload=None):
+  if not parallel:
+    return model
+  if is_fsdp:
+    if rank == 0:
+      dprint(f"> wrapping model with fsdp")
+      dprint(f"min params: {min_params}")
+      dprint(f"no wrap: {no_wrap}")
+      dprint(f"cpu offload: {offload}")
+    my_auto_wrap_policy = functools.partial(
+      size_based_auto_wrap_policy, min_num_params=min_params
+    ) if not no_wrap else None
+    cpu_offload = CPUOffload(offload) if offload else None
+    model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, cpu_offload=cpu_offload)
+  return model
+
 
 def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=None, parallel=True):
   model.train()
@@ -139,107 +212,60 @@ def test(model, rank, world_size, test_loader, parallel=True):
         dprint('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
             test_loss, int(ddp_loss[1]), int(ddp_loss[2]),
             100. * ddp_loss[1] / ddp_loss[2]))
-        
-def main(args):
-  assert args.no_parallel
-
-  dprint(f"> training on {args.device}")
-  if args.device == 'cuda':
-    dprint(f"> device name: {torch.cuda.get_device_name()}")
-
-  transform=transforms.Compose([
-      transforms.ToTensor(),
-      transforms.Normalize((0.1307,), (0.3081,))
-  ])
-   
-  dataset1 = datasets.MNIST('../data', train=True, download=True,
-                        transform=transform)
-  dataset2 = datasets.MNIST('../data', train=False,
-                        transform=transform)
-  train_loader = torch.utils.data.DataLoader(dataset1, batch_size=args.batch_size, shuffle=True, num_workers=0)
-  test_loader = torch.utils.data.DataLoader(dataset2, batch_size=args.test_batch_size, shuffle=False, num_workers=0)
-  model = Net().to(args.device)
-  optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
-  scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
-
-  run = None
-  for epoch in trange(1, args.epochs + 1):
-     train(args, model, args.device, -1, train_loader, optimizer, epoch, sampler=None, parallel=not args.no_parallel)
-     test(model, args.device, -1, test_loader, parallel=not args.no_parallel)
-     scheduler.step()
-  print(f"{model}")
-  if args.save_model:
-     states = model.state_dict()
-     if rank == 0:
-         torch.save(states, "mnist_cnn.pt")
 
 def fsdp_main(rank, world_size, args):
-  assert not args.no_parallel
+  parallel = not args.no_parallel
+  is_fsdp = not args.no_fsdp
 
-  if args.trivial:
-    return trivial(rank, world_size, args)
+  if parallel:
+    assert torch.cuda.is_available()
 
-  setup(rank, world_size, args.backend, args.multinode, args.timeout)
+  _name = f"({torch.cuda.get_device_name(rank)})" if rank == 'cuda' or isinstance(rank, int) else ''
+  dprint(f"> training on {rank2dev(rank)} {_name}")
 
-  transform=transforms.Compose([
-      transforms.ToTensor(),
-      transforms.Normalize((0.1307,), (0.3081,))
-  ])
-   
-  dataset1 = datasets.MNIST('../data', train=True, download=True,
-                        transform=transform)
-  dataset2 = datasets.MNIST('../data', train=False,
-                        transform=transform)
-  sampler1 = DistributedSampler(dataset1, rank=rank, num_replicas=world_size, shuffle=True)
-  sampler2 = DistributedSampler(dataset2, rank=rank, num_replicas=world_size)
+  setup(rank, world_size, args.backend, args.multinode, args.timeout, parallel=parallel)
 
-  train_kwargs = {'batch_size': args.batch_size, 'sampler': sampler1}
-  test_kwargs = {'batch_size': args.test_batch_size, 'sampler': sampler2}
-  cuda_kwargs = {'num_workers': 2, 'pin_memory': True, 'shuffle': False}
-  train_kwargs.update(cuda_kwargs)
-  test_kwargs.update(cuda_kwargs)
+  train_loader, test_loader, sampler = make_data_loaders(task=args.task, parallel=parallel,
+                                                batch_size=args.batch_size,
+                                                test_batch_size=args.test_batch_size, rank=rank, world_size=world_size)
+  if parallel:
+    local_rank = rank if not args.multinode else int(os.environ['SLURM_LOCALID'])
+    torch.cuda.set_device(local_rank)
 
-  train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
-  test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
-
-  local_rank = rank if not args.multinode else int(os.environ['SLURM_LOCALID'])
-  torch.cuda.set_device(local_rank)
-
+  # if args.time_cuda:
   init_start_event = torch.cuda.Event(enable_timing=True)
   init_end_event = torch.cuda.Event(enable_timing=True)
 
-  model = Net().to(rank)
-
-  my_auto_wrap_policy = functools.partial(
-     size_based_auto_wrap_policy, min_num_params=args.min_params
-  ) if not args.no_wrap else None
-  offload = CPUOffload(args.cpu_offload) if args.cpu_offload else None
-  model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, cpu_offload=offload)
-
+  model = make_model(args.task, parallel, rank=rank)
+  model = transform_model(model, parallel, is_fsdp, rank, args.no_wrap, args.min_params, args.cpu_offload)
   optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 
   scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+  # if args.time_cuda:
   init_start_event.record()
   if not args.no_train:
     for epoch in trange(1, args.epochs + 1):
-      train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=sampler1, parallel=not args.no_parallel)
-      test(model, rank, world_size, test_loader)
+      train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=sampler, parallel=parallel)
+      test(model, rank, world_size, test_loader, parallel=parallel)
       scheduler.step()
+  # if args.time_cuda:
   init_end_event.record()
 
-  if rank == 0:
+  # if args.time_cuda:
+  if rank == 0 or rank == 'cuda':
     print(f"CUDA event elapsed time: {init_start_event.elapsed_time(init_end_event) / 1000}sec")
+  if rank == 0 or not parallel: 
     print(f"{model}")
 
+  # save(save_model=args.save_model, parallel=parallel, rank=rank, model=args.)
   if args.save_model:
-     dist.barrier()
+     if parallel:
+      dist.barrier()
      states = model.state_dict()
-     if rank == 0:
+     if rank == 0 or not parallel:
          torch.save(states, "mnist_cnn.pt")
-  cleanup()
+  cleanup(parallel=parallel)
 
-def mmidas_main(rank, world_size, args):
-  ...
 
 if __name__ == '__main__':
     # Training settings
@@ -265,7 +291,6 @@ if __name__ == '__main__':
     parser.add_argument('--backend', type=str, default='nccl', help='distributed backend (default: nccl)')
     parser.add_argument('--multinode', action='store_true', default=False, help='enable multinode training') # TODO
     parser.add_argument('--no_parallel', action='store_true', default=False, help='disable parallelism')
-    parser.add_argument('--mnist', action='store_true', default=True, help='run fsdp on simple mnist example') # TODO
     parser.add_argument('--min_params', type=int, default=1000, help='minimum number of parameters to wrap')
     parser.add_argument('--no_wrap', action='store_true', default=False, help='disable wrapping')
     parser.add_argument('--cpu_offload', action='store_true', default=False, help='enable CPU offload')
@@ -278,6 +303,9 @@ if __name__ == '__main__':
     parser.add_argument('--jit', action='store_true', default=False, help='jit compile the model for faster training') # TODO
     parser.add_argument('--wandb', action='store_true', default=False, help='log to wandb') # TODO
     parser.add_argument('--device', type=str, default='cuda', help='device to use (default: cuda)')
+    parser.add_argument('--task', type=str, default='mmidas', help='name of the model to train (default: mmidas). Options: mmidas, mnist, trivial') # TODO
+    parser.add_argument('--no_fsdp', action='store_true', default=False, help='disable fsdp')
+    parser.add_argument('--time_cuda', action='store_true', default=False, help='time cuda ops')
     args = parser.parse_args()
 
     if args.wandb:
@@ -298,12 +326,25 @@ if __name__ == '__main__':
     dprint(f"backend: {args.backend}")
     dprint(f"parallel training: {not args.no_parallel}")
     dprint(f"multinode training: {args.multinode}")
-    dprint(f"mnist mode: {args.mnist}")
+    dprint(f"task: {args.task}")
     dprint(f"cpu available: {torch.cpu.is_available()}")
     dprint(f"cuda available: {torch.cuda.is_available()}")
+    print_gpus()
     dprint(f"mps available: {torch.backends.mps.is_available()}")
-    if args.no_parallel:
-      main(args)
+    if args.trivial:
+      world_size = torch.cuda.device_count()
+      dprint(f"world size: {world_size}")
+      mp.spawn(trivial,
+               args=(world_size, args),
+               nprocs=world_size,
+               join=True)
+    elif args.no_parallel:
+      world_size = 1
+      rank = args.device
+      dprint(f"world size: {world_size}")
+      dprint(f"rank: {rank}")
+      fsdp_main(rank, world_size, args)
+      # main(args)
     elif args.multinode:
       assert torch.cuda.device_count() == int(os.environ['SLURM_GPUS_ON_NODE'])
       world_size = int(os.environ['SLURM_NTASKS'])
@@ -315,7 +356,6 @@ if __name__ == '__main__':
       fsdp_main(rank, world_size, args)
     else:
       world_size = torch.cuda.device_count()
-      print_gpus()
       dprint(f"world size: {world_size}")
       mp.spawn(fsdp_main,
           args=(world_size, args),
