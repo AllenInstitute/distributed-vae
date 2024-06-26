@@ -277,7 +277,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     assert not (args.no_parallel and args.multinode), "cannot disable parallelism and enable multinode training"
-    assert not (not args.no_parallel and args.device), "cannot specify device when parallelism is enabled"
 
     torch.manual_seed(args.seed)
 
