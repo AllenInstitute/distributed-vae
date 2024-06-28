@@ -1,1 +1,7 @@
 slurm-log/
+.mypy_cache/
+wandb/
+memory-snapshots/
+memory-plots/
+
+core.*

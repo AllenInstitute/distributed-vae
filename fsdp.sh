@@ -5,9 +5,10 @@ DEFAULT_EPOCHS=10
 DEFAULT_CONDA_ENV="dist-mmidas"
 DEFAULT_PARTITION="celltypes"
 DEFAULT_TIMEOUT=120
+DEFAULT_NODES=2
 
 OPTIONS=""
-LONGOPTIONS=gpus:,epochs:,env:,partition:,timeout:
+LONGOPTIONS=gpus:,epochs:,env:,partition:,timeout:,nodes:
 
 PARSED=$(getopt --options p: --longoptions $LONGOPTIONS --name "$0" -- "$@")
 if [[ $? -ne 0 ]]; then
@@ -21,6 +22,7 @@ EPOCHS=$DEFAULT_EPOCHS
 CONDA_ENV=$DEFAULT_CONDA_ENV
 PARTITION=$DEFAULT_PARTITION
 TIMEOUT=$DEFAULT_TIMEOUT
+NODES=$DEFAULT_NODES
 
 # Process the options
 while true; do
@@ -45,6 +47,10 @@ while true; do
       TIMEOUT="$2"
       shift 2
       ;;
+    --nodes)
+      NODES="$2"
+      shift 2
+      ;;
     --)
       shift
       break
@@ -56,12 +62,12 @@ while true; do
   esac
 done
 
-SCRIPT="mnist.slurm"
+SCRIPT="mnist.sh"
 
 cat <<EOF > $SCRIPT
 #!/bin/bash
 #SBATCH --job-name=fsdp_mnist
-#SBATCH --nodes=2
+#SBATCH --nodes=$NODES
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:$GPU_COUNT
 #SBATCH --time=01:00:00
@@ -71,15 +77,16 @@ cat <<EOF > $SCRIPT
 
 mkdir -p slurm-log
 
-export MASTER_ADDR=\$(scontrol show hostnames \$SLURM_JOB_NODELIST | head -n 1)
-export MASTER_PORT=12355
-export WORLD_SIZE=\$((\$SLURM_NNODES * \$SLURM_NTASKS_PER_NODE))
+# export MASTER_ADDR=\$(scontrol show hostnames \$SLURM_JOB_NODELIST | head -n 1)
+# export MASTER_PORT=12355
+# export WORLD_SIZE=\$((\$SLURM_NNODES * \$SLURM_NTASKS_PER_NODE))
 
 eval "\$(conda shell.bash hook)"
 conda activate $CONDA_ENV
 
 echo "running fsdp_mnist.py..."
-srun python fsdp_mnist.py --multinode --backend nccl --epochs $EPOCHS --timeout $TIMEOUT
+# srun python fsdp.py --multinode --backend nccl --epochs $EPOCHS --timeout $TIMEOUT --task mnist --wandb
+srun python fsdp.py --task trivial
 EOF
 
 chmod +x $SCRIPT
