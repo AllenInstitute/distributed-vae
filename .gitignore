@@ -3,5 +3,6 @@ slurm-log/
 wandb/
 memory-snapshots/
 memory-plots/
+traces/
 
 core.*

@@ -2,6 +2,7 @@ import pprint
 import os
 import argparse
 import functools
+from functools import reduce
 import torch
 import torch.nn as nn 
 import torch.overrides as overrides
@@ -12,7 +13,7 @@ from torch.optim.lr_scheduler import StepLR
 import torch.distributed as dist 
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
   CPUOffload,
   BackwardPrefetch,
@@ -34,7 +35,11 @@ import time
 import matplotlib.pyplot as plt
 import gc
 
-def subset_dataset(dataset, percent):
+from torch.profiler import profile, record_function, ProfilerActivity
+
+from pyrsistent import m, v, pmap, pvector
+
+def take_percent(dataset, percent):
   return torch.utils.data.Subset(dataset, list(range(int(len(dataset) * percent))))
 
 def reset_cuda_for_next_run(world_size):
@@ -62,16 +67,11 @@ def bold(s):
     case _:
       return f"\033[1m{s}\033[0m"
 
-# %%
-def rank_vs_device(rank, color='yellow'):
-  dprint(f"rank: {rank} vs current device: {torch.cuda.current_device()}", color=color, bold=True)
-
 def count_params(model):
   return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 class MemoryLogger:
   def __init__(self, world_size, interval=0.005, run=None, rank=None):
-    # self.memory_allocated = [[] for _ in range(world_size)]
     self.memory_allocated = []
     self.max_memory_allocated = []
     self.running = False
@@ -88,8 +88,8 @@ class MemoryLogger:
     torch.cuda.set_device(self.rank)
     start = time.time()
     while self.running:
-      self.memory_allocated.append(MB(torch.cuda.memory_allocated(self.rank)))
-      self.max_memory_allocated.append(MB(torch.cuda.max_memory_allocated(self.rank)))
+      self.memory_allocated.append(bytes_to_mb(torch.cuda.memory_allocated(self.rank)))
+      self.max_memory_allocated.append(bytes_to_mb(torch.cuda.max_memory_allocated(self.rank)))
       if self.run is not None:
         self.run.log({f'rank {self.rank} memalloc': self.memory_allocated[-1],
                       f'rank {self.rank} max memalloc': self.max_memory_allocated[-1]})
@@ -110,15 +110,8 @@ class MemoryLogger:
     self.running = False
     self.thread.join()
 
-  def synchronize(self):
-    self.synced = True
-
   def get(self):
     assert not self.running
-    return self.memory_allocated
-  
-  def get_synchronized(self):
-    self.stop()
     return self.memory_allocated
 
 def get_plotter(s):
@@ -131,13 +124,11 @@ def get_plotter(s):
       raise ValueError(f"invalid plot type: {s}")
 
 def truncate(lst, n):
-  ret = []
-  for i in range(min(n, len(lst))):
-    ret.append(lst[(len(lst) // n) * i])
-  return ret
-  
+  return reduce(lambda res, i: res.append(lst[(len(lst) // n) * i]), 
+               range(min(n, len(lst))), 
+               v())
 
-def MB(bytes):
+def bytes_to_mb(bytes):
   return bytes / 1024**2
 
 def random_string(n):
@@ -151,86 +142,9 @@ class DeepestNet(nn.Module):
     self.dropout1 = nn.Dropout(0.25)
     self.dropout2 = nn.Dropout(0.5)
     self.fc1 = nn.Linear(9216, 9000)
-    self.fc1a = nn.Linear(9000, 2000)
-    self.fc1b = nn.Linear(2000, 2000)
-    self.fc1c = nn.Linear(2000, 2000)
-    self.fc1d = nn.Linear(2000, 2000)
-    self.fc1e = nn.Linear(2000, 2000)
-    self.fc1f = nn.Linear(2000, 2000)
-    self.fc1g = nn.Linear(2000, 2000)
-    self.fc1h = nn.Linear(2000, 2000)
-    self.fc1i = nn.Linear(2000, 2000)
-    self.fc1j = nn.Linear(2000, 2000)
-    self.fc1k = nn.Linear(2000, 2000)
-    self.fc1l = nn.Linear(2000, 2000)
-    self.fc1m = nn.Linear(2000, 2000)
-    self.fc1n = nn.Linear(2000, 2000)
-    self.fc1o = nn.Linear(2000, 2000)
-    self.fc1p = nn.Linear(2000, 2000)
-    self.fc1q = nn.Linear(2000, 2000)
-    self.fc1r = nn.Linear(2000, 2000)
-    self.fc1s = nn.Linear(2000, 2000)
-    self.fc1t = nn.Linear(2000, 2000)
-    self.fc1u = nn.Linear(2000, 2000)
-    self.fc1v = nn.Linear(2000, 2000)
-    self.fc1w = nn.Linear(2000, 2000)
-    self.fc1x = nn.Linear(2000, 2000)
-    self.fc1y = nn.Linear(2000, 2000)
-    self.fc3 = nn.Linear(2000, 2000)
-    self.fc4 = nn.Linear(2000, 2000)
-    self.fc5 = nn.Linear(2000, 2000)
-    self.fc6 = nn.Linear(2000, 2000)
-    self.fc7 = nn.Linear(2000, 2000)
-    self.fc8 = nn.Linear(2000, 2000)
-    self.fc9 = nn.Linear(2000, 2000)
-    self.fc10 = nn.Linear(2000, 2000)
-    self.fc11 = nn.Linear(2000, 2000)
-    self.fc12 = nn.Linear(2000, 2000)
-    self.fc13 = nn.Linear(2000, 2000)
-    self.fc14 = nn.Linear(2000, 2000)
-    self.fc15 = nn.Linear(2000, 2000)
-    self.fc16 = nn.Linear(2000, 2000)
-    self.fc17 = nn.Linear(2000, 2000)
-    self.fc18 = nn.Linear(2000, 2000)
-    self.fc19 = nn.Linear(2000, 2000)
-    self.fc20 = nn.Linear(2000, 2000)
-    self.fc21 = nn.Linear(2000, 2000)
-    self.fc22 = nn.Linear(2000, 2000)
-    self.fc23 = nn.Linear(2000, 2000)
-    self.fc24 = nn.Linear(2000, 2000)
-    self.fc25 = nn.Linear(2000, 2000)
-    self.fc26 = nn.Linear(2000, 2000)
-    self.fc27 = nn.Linear(2000, 2000)
-    self.fc28 = nn.Linear(2000, 2000)
-    self.fc29 = nn.Linear(2000, 2000)
-    self.fc30 = nn.Linear(2000, 2000)
-    self.fc31 = nn.Linear(2000, 2000)
-    self.fc32 = nn.Linear(2000, 2000)
-    self.fc33 = nn.Linear(2000, 2000)
-    self.fc34 = nn.Linear(2000, 2000)
-    self.fc35 = nn.Linear(2000, 2000)
-    self.fc36 = nn.Linear(2000, 2000)
-    self.fc37 = nn.Linear(2000, 2000)
-    self.fc38 = nn.Linear(2000, 2000)
-    self.fc39 = nn.Linear(2000, 2000)
-    self.fc40 = nn.Linear(2000, 2000)
-    self.fc41 = nn.Linear(2000, 2000)
-    self.fc42 = nn.Linear(2000, 2000)
-    self.fc43 = nn.Linear(2000, 2000)
-    self.fc44 = nn.Linear(2000, 2000)
-    self.fc45 = nn.Linear(2000, 2000)
-    self.fc46 = nn.Linear(2000, 2000)
-    self.fc47 = nn.Linear(2000, 2000)
-    self.fc48 = nn.Linear(2000, 2000)
-    self.fc49 = nn.Linear(2000, 2000)
-    self.fc50 = nn.Linear(2000, 2000)
-    self.fc51 = nn.Linear(2000, 2000)
-    self.fc52 = nn.Linear(2000, 2000)
-    self.fc53 = nn.Linear(2000, 2000)
-    self.fc54 = nn.Linear(2000, 2000)
-    self.fc55 = nn.Linear(2000, 2000)
-    self.fc56 = nn.Linear(2000, 2000)
-    self.fc2a = nn.Linear(2000, 128)
+    self.fc1a = nn.Linear(9000, 1000)
+    self.fc = nn.ModuleList([nn.Linear(1000, 1000) for _ in range(176)])
+    self.fc2a = nn.Linear(1000, 128)
     self.fc2 = nn.Linear(128, 10)
 
   def forward(self, x):
@@ -245,84 +159,8 @@ class DeepestNet(nn.Module):
     x = F.relu(x)
     x = self.dropout2(x)
     x = self.fc1a(x)
-    x = self.fc1b(x)
-    x = self.fc1c(x)
-    x = self.fc1d(x)
-    x = self.fc1e(x)
-    x = self.fc1f(x)
-    x = self.fc1g(x)
-    x = self.fc1h(x)
-    x = self.fc1i(x)
-    x = self.fc1j(x)
-    x = self.fc1k(x)
-    x = self.fc1l(x)
-    x = self.fc1m(x)
-    x = self.fc1n(x)
-    x = self.fc1o(x)
-    x = self.fc1p(x)
-    x = self.fc1q(x)
-    x = self.fc1r(x)
-    x = self.fc1s(x)
-    x = self.fc1t(x)
-    x = self.fc1u(x)
-    x = self.fc1v(x)
-    x = self.fc1w(x)
-    x = self.fc1x(x)
-    x = self.fc1y(x)
-    x = self.fc3(x)
-    x = self.fc4(x)
-    x = self.fc5(x)
-    x = self.fc6(x)
-    x = self.fc7(x)
-    x = self.fc8(x)
-    x = self.fc9(x)
-    x = self.fc10(x)
-    x = self.fc11(x)
-    x = self.fc12(x)
-    x = self.fc13(x)
-    x = self.fc14(x)
-    x = self.fc15(x)
-    x = self.fc16(x)
-    x = self.fc17(x)
-    x = self.fc18(x)
-    x = self.fc19(x)
-    x = self.fc20(x)
-    x = self.fc21(x)
-    x = self.fc22(x)
-    x = self.fc23(x)
-    x = self.fc24(x)
-    x = self.fc25(x)
-    x = self.fc26(x)
-    x = self.fc27(x)
-    x = self.fc28(x)
-    x = self.fc29(x)
-    x = self.fc30(x)
-    x = self.fc31(x)
-    x = self.fc32(x)
-    x = self.fc33(x)
-    x = self.fc34(x)
-    x = self.fc35(x)
-    x = self.fc36(x)
-    x = self.fc37(x)
-    x = self.fc38(x)
-    x = self.fc39(x)
-    x = self.fc40(x)
-    x = self.fc41(x)
-    x = self.fc42(x)
-    x = self.fc43(x)
-    x = self.fc44(x)
-    x = self.fc45(x)
-    x = self.fc46(x)
-    x = self.fc47(x)
-    x = self.fc48(x)
-    x = self.fc49(x)
-    x = self.fc50(x)
-    x = self.fc51(x)
-    x = self.fc52(x)
-    x = self.fc53(x)
-    x = self.fc54(x)
-    x = self.fc55(x)
-    x = self.fc56(x)
+    for l in self.fc:
+      x = l(x)
     x = self.fc2a(x)
     x = self.fc2(x)
     output = F.log_softmax(x, dim=1)
@@ -405,7 +243,7 @@ def plot(data, plot_t, xlabel, ylabel, title, legend, fname, folder=''):
 def trivial(rank, world_size, args):
   parallel = not args.no_parallel
 
-  setup(rank, world_size, parallel=parallel, is_multinode=args.multinode)
+  setup_torch_distributed_(rank, world_size, parallel=parallel, is_multinode=args.multinode)
   dprint(f"> starting trivial test on rank {rank}")
   if parallel:
     local_rank = rank if not args.multinode else int(os.environ['SLURM_LOCALID'])
@@ -416,11 +254,10 @@ def trivial(rank, world_size, args):
     if parallel:
       dist.all_reduce(t, op=dist.ReduceOp.SUM)
       dprint(f"rank {rank} - after reduce: {t}")
-  cleanup(parallel=parallel)
+  cleanup_torch_distributed_()
 
-# [] TODO can make this slightly more efficient
-def _dprint():
-  color_code = {
+def cached_dprint():
+  color_code = pmap({
     'black': '30',
     'red': '31',
     'green': '32',
@@ -429,18 +266,18 @@ def _dprint():
     'magenta': '35',
     'cyan': '36',
     'white': '37',
-  }
+  })
   def dprint(*args, color=None, bold=False, italics=False, **kwargs):
     if __debug__:
       start_code = "\033["
       end_code = "\033[0m"
-      codes = []
+      codes = v()
       if bold:
-        codes.append('1')
+        codes = codes.append('1')
       if italics:
-        codes.append('3')
+        codes = codes.append('3')
       if color is not None:
-        codes.append(color_code[color])
+        codes = codes.append(color_code[color])
       if len(codes) > 0:
         start_code += ';'.join(codes) + 'm'
         print(start_code, end='')
@@ -448,17 +285,12 @@ def _dprint():
       print(end_code, end='')
   return dprint
 
-dprint = _dprint()
-
-def print_gpus():
-  dprint(f"gpus: {torch.cuda.device_count()}")
-  for i in range(torch.cuda.device_count()):
-    dprint(f"\tgpu {i}: {torch.cuda.get_device_name(i)}")
+dprint = cached_dprint()
 
 def eparams(model):
-  return list(model.parameters())
+  return pvector(model.parameters())
 
-def setup(rank, world_size, backend='nccl', is_multinode=False, timeout=120, parallel=True):
+def setup_torch_distributed_(rank, world_size, backend='nccl', is_multinode=False, timeout=120, parallel=True):
   if not parallel:
     return
   if is_multinode:
@@ -472,12 +304,10 @@ def setup(rank, world_size, backend='nccl', is_multinode=False, timeout=120, par
   assert not ("A100" in torch.cuda.get_device_name(rank) and backend == 'nccl'), "a100 doesn't support nccl"
   dist.init_process_group(backend=backend, rank=rank, world_size=world_size, timeout=timedelta(seconds=timeout))
 
-def cleanup(parallel=True):
-  if not parallel:
-    return
+def cleanup_torch_distributed_():
   dist.destroy_process_group()
 
-def rank2dev(rank):
+def rank_to_device_string(rank):
   if type(rank) == int:
     return f"cuda:{rank}"
   return rank
@@ -495,8 +325,8 @@ def make_data_loaders(task, parallel, batch_size, test_batch_size, percent, **kw
       ])
       dataset1 = datasets.MNIST('../data', train=True, download=False, transform=transform)
       dataset2 = datasets.MNIST('../data', train=False, transform=transform)
-      dataset1 = subset_dataset(dataset1, percent)
-      dataset2 = subset_dataset(dataset2, percent)
+      dataset1 = take_percent(dataset1, percent)
+      dataset2 = take_percent(dataset2, percent)
       sampler1 = DistributedSampler(dataset1, rank=rank, num_replicas=world_size, shuffle=True)
       sampler2 = DistributedSampler(dataset2, rank=rank, num_replicas=world_size)
       train_kwargs = {'batch_size': batch_size, 'sampler': sampler1}
@@ -515,8 +345,8 @@ def make_data_loaders(task, parallel, batch_size, test_batch_size, percent, **kw
       ])
       dataset1 = datasets.MNIST('../data', train=True, download=False, transform=transform)
       dataset2 = datasets.MNIST('../data', train=False, transform=transform)
-      dataset1 = subset_dataset(dataset1, percent)
-      dataset2 = subset_dataset(dataset2, percent)
+      dataset1 = take_percent(dataset1, percent)
+      dataset2 = take_percent(dataset2, percent)
       train_loader = torch.utils.data.DataLoader(dataset1, batch_size=batch_size, shuffle=True, drop_last=True)
       test_loader = torch.utils.data.DataLoader(dataset2, batch_size=test_batch_size, shuffle=False, drop_last=True)
       return train_loader, test_loader, None
@@ -593,7 +423,7 @@ def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler
     optimizer.zero_grad()
     output = model(data)
     loss = F.nll_loss(output, target, reduction='sum')
-    _mem_alloc = MB(torch.cuda.memory_allocated(rank))
+    _mem_alloc = bytes_to_mb(torch.cuda.memory_allocated(rank))
     mem.append(_mem_alloc)
     if run is not None:
       run.log({f'cuda {rank} memory allocated': _mem_alloc})
@@ -601,6 +431,8 @@ def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler
     optimizer.step()
     ddp_loss[0] += loss.item()
     ddp_loss[1] += len(data)
+  if rank == 0 or not parallel:
+    dprint(f"batches: {batch_idx + 1}")
   if parallel and is_reduce:
     dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
   if print_loss:
@@ -616,6 +448,7 @@ def test(model, rank, world_size, test_loader, parallel=True, print_loss=True, i
     correct = 0
     ddp_loss = torch.zeros(3).to(rank)
     with torch.no_grad():
+        batches = 0
         for data, target in test_loader:
             data, target = data.to(rank), target.to(rank)
             output = model(data)
@@ -623,6 +456,9 @@ def test(model, rank, world_size, test_loader, parallel=True, print_loss=True, i
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             ddp_loss[1] += pred.eq(target.view_as(pred)).sum().item()
             ddp_loss[2] += len(data)
+            batches += 1
+    if rank == 0 or not parallel:
+        dprint(f"test batches: {batches}")
     if parallel and is_reduce:
       dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
 
@@ -632,7 +468,7 @@ def test(model, rank, world_size, test_loader, parallel=True, print_loss=True, i
           test_loss, int(ddp_loss[1]), int(ddp_loss[2]),
           100. * ddp_loss[1] / ddp_loss[2]))
 
-def model_run(rank, world_size, args, run, mlogger):
+def model_run(rank, world_size, args, run, prof):
   parallel=  not args.no_parallel
   is_fsdp = not args.no_fsdp and parallel
   print_train_loss = 'train' not in args.no_loss
@@ -644,7 +480,7 @@ def model_run(rank, world_size, args, run, mlogger):
     assert torch.cuda.is_available()
 
   _name = f"({torch.cuda.get_device_name(rank)})" if rank == 'cuda' or isinstance(rank, int) else ''
-  dprint(f"> training on {rank2dev(rank)} {_name} (host: {os.uname().nodename})")
+  dprint(f"> training on {rank_to_device_string(rank)} {_name} (host: {os.uname().nodename})")
 
   if parallel:
     torch.cuda.set_device(rank)
@@ -690,12 +526,12 @@ def fsdp_main(rank, world_size, args):
   if parallel:
     assert torch.cuda.is_available()
 
-  setup(rank, world_size, args.backend, args.multinode, args.timeout, parallel=parallel)
+  setup_torch_distributed_(rank, world_size, args.backend, args.multinode, args.timeout, parallel=parallel)
   if parallel:
     torch.cuda.set_device(rank)
 
   _name = f"({torch.cuda.get_device_name(rank)})" if rank == 'cuda' or isinstance(rank, int) else ''
-  dprint(f"> training on {rank2dev(rank)} {_name} (host: {os.uname().nodename})")
+  dprint(f"> training on {rank_to_device_string(rank)} {_name} (host: {os.uname().nodename})")
 
 
   # if args.time_cuda:
@@ -716,17 +552,20 @@ def fsdp_main(rank, world_size, args):
     mlogger = MemoryLogger(world_size, interval=args.interval, run=run, rank=rank)
   init_start_event.record()
   model = None
-  for i in range(args.runs):
+  rets = {}
+  if args.profile and master_rank:
+    with profile(activities=[ProfilerActivity.CUDA], profile_memory=True, record_shapes=True) as prof:
+      rets = model_run(rank, world_size, args, run, prof)
+    print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100))
+    if not os.path.exists('traces'):
+      os.makedirs('traces')
+    prof.export_chrome_trace(f"trace-{time.time()}-{args.id}-{rank}.json")
+  else:
     rets = model_run(rank, world_size, args, run, mlogger)
-    epoch_times += rets['epoch_times']
-    mems += rets['mems']
-    if i == args.runs - 1:
-      model = rets['model']
-    else:
-      del rets['model']
-      del rets
-      reset_cuda_for_next_run(world_size)
-      gc.collect()
+  epoch_times += rets['epoch_times']
+  mems += rets['mems']
+  model = rets['model']
+
 
     # if args.record_memory_history:
     #   torch.cuda.memory._record_memory_history()
@@ -787,7 +626,8 @@ def fsdp_main(rank, world_size, args):
      states = model.state_dict()
      if master_rank:
          torch.save(states, "mnist_cnn.pt")
-  cleanup(parallel=parallel)
+  if parallel:
+    cleanup_torch_distributed_()
 
 # TODO: [] lots of stuff missing from this guy
 def mnist_main(rank, world_size, args):
@@ -795,7 +635,7 @@ def mnist_main(rank, world_size, args):
 
   parallel = not args.no_parallel
 
-  setup(rank, world_size)
+  setup_torch_distributed_(rank, world_size)
 
   transform=transforms.Compose([
       transforms.ToTensor(),
@@ -864,15 +704,15 @@ def mnist_main(rank, world_size, args):
       if rank == 0:
           torch.save(states, "mnist_cnn.pt")
 
-  cleanup()
+  cleanup_torch_distributed_()
 
 if __name__ == '__main__':
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
     parser.add_argument('--batch-size', type=int, default=256, metavar='N',
-                        help='input batch size for training (default: 128)')
+                        help='input batch size for training (default: 256)')
     parser.add_argument('--test-batch-size', type=int, default=256, metavar='N',
-                        help='input batch size for testing (default: 128)')
+                        help='input batch size for testing (default: 256)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N',
                         help='number of epochs to train (default: 14)')
     parser.add_argument('--lr', type=float, default=1.0, metavar='LR',
@@ -923,6 +763,7 @@ if __name__ == '__main__':
     parser.add_argument('--runs', type=int, default=1, help='number of runs (default: 1)') # TODO
     parser.add_argument('--percent', type=float, default=1.0, help='percent of data to use (default: 1.0)') # TODO
     parser.add_argument('--id', type=str, default='', help='experiment id (default: random)') # TODO
+    parser.add_argument('--profile', action='store_true', default=False, help='enable torch profiler') # TODO
 
     # mmidas-smartseq args
     # parser.add_argument('--categories', type=int, default=120, help="(maximum) number of cell types (default: 120)")
@@ -1072,7 +913,7 @@ if __name__ == '__main__':
 # [] change the way I log memory
 # [] try out pytorch ignite
 # [] add config to wandb log
-# [] setup github utils
+# [] setup_torch_distributed_ github utils
 # [] default cuda device of new thread is cuda:0
 
 # when num params is ~1mil, you don't see that much impact from
@@ -1094,29 +935,3 @@ if __name__ == '__main__':
 # multiple of 8 tensor sizes
 
 
-# class Net(nn.Module):
-#   ...
-
-# def main(rank, world_size, args):
-#   setup(rank, world_size)
-#   ...
-#   model = Net().to(args.device)
-#   model = FSDP(model, auto_wrap_policy=...) # new!
-#   train(model, ...)
-#   test(model, ...)
-
-#   cleanup()
-
-# if __name__ == '__main__':
-#   world_size = torch.cuda.device_count()
-#   mp.spawn(main, args=(args,), nprocs=args.world_size, join=True)
-
-# import torch.distributed as dist 
-
-# def setup(rank, world_size):
-#     os.environ['MASTER_ADDR'] = 'localhost'
-#     os.environ['MASTER_PORT'] = '12355'
-#     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-# def cleanup():
-#     dist.destroy_process_group()
