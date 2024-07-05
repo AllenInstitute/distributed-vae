@@ -42,7 +42,7 @@ def main(rank, world_size):
         print(f'Average allreduce time: {avg_time:.3f} ms')
     cleanup()
 
-    
+
 
 if __name__ == '__main__':
   world_size = torch.cuda.device_count()
