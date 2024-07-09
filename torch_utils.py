@@ -56,3 +56,9 @@ def count(model, quantity):
   match quantity:
     case 'params':
       return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+def take_percent_data(dataset, percent):
+  return torch.utils.data.Subset(dataset, list(range(int(len(dataset) * percent))))
+
+def check_not_a100(rank, backend):
+  assert not ("A100" in torch.cuda.get_device_name(rank) and backend == 'nccl')

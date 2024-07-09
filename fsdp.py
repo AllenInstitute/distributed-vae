@@ -11,12 +11,7 @@ from datetime import timedelta
 from functools import reduce
 from itertools import filterfalse
 
-# conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-# pip install pyrsistent wandb tqdm matplotlib
-# python fsdp.py --dataset mnist --model net --parallel none --epochs 5
-# python fsdp.py --dataset mnist --model net --world-size 2 --no-sampler --epochs 2
-
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -46,44 +41,35 @@ from tqdm import trange
 
 import mmidas
 from my_utils import conj, try_to_get, pprint, avg, dprint, make_path, random_string, convert, random_of
-from torch_utils import print_available_torch, ResourceLogger, count
+from torch_utils import print_available_torch, ResourceLogger, count, take_percent_data, check_not_a100
 
+def start_record_memory_history():
+  torch.cuda.memory._start_record_memory_history()
 
-def take_percent_data(dataset, percent):
-  return torch.utils.data.Subset(dataset, list(range(int(len(dataset) * percent))))
-
-def check_not_a100(rank, backend):
-  assert not ("A100" in torch.cuda.get_device_name(rank) and backend == 'nccl')
-
-def record_memory_history(fname, folder='memory-snapshots'):
+def end_record_memory_history(fname, folder='memory-snapshots'):
   make_path(folder)
   fname = f"{folder}/{fname}"
   torch.cuda.memory._dump_snapshot(fname)
   dprint(f"> saved memory snapshot to {fname}")
-
-    
-def get_device_name_or_empty(rank):
-  return torch.cuda.get_device_name(rank) if rank == 'cuda' \
-         or isinstance(rank, int) else ''
 
 def make_wandb(project, dataset, id, config):
   wandb.require('service')
   return wandb.init(project=project, group=f"{dataset}-{id}", config=dict(config))
 
 def make_run_config(parser):
+  def is_none(*xs):
+    match xs:
+      case (v,):
+        return v is None or v == '' or v == 'None' or v == 'none' or v == False
+      case (_, v):
+        return v is None or v == '' or v == 'None' or v == 'none' or v == False
+      
+  def filter_none(xs):
+    return filterfalse(lambda kv: is_none(*kv), xs)
+
   config = pmap(filter_none(vars(parser.parse_args()).items()))
   config = try_to_get(config, 'id', random_of('str', 4))
   return config
-
-def is_none(*xs):
-  match xs:
-    case (v,):
-      return v is None or v == '' or v == 'None' or v == 'none' or v == False
-    case (_, v):
-      return v is None or v == '' or v == 'None' or v == 'none' or v == False
-
-def filter_none(xs):
-  return filterfalse(lambda kv: is_none(*kv), xs)
 
 @contextmanager
 def profile_run(rank, id):
@@ -210,8 +196,7 @@ def plot(data, plot_t, xlabel, ylabel, title, legend, fname, folder=''):
   dprint(f"> saved plot to {folder}/{fname}")
   plt.close()
 
-
-def setup_torch_distributed_(rank, world_size, backend='nccl', timeout=120):
+def setup_torch_distributed(rank, world_size, backend='nccl', timeout=120):
   os.environ['MASTER_ADDR'] = 'localhost'
   os.environ['MASTER_PORT'] = '12355'
   dprint(f"rank {rank} - master addr: {os.environ['MASTER_ADDR']}")
@@ -222,13 +207,8 @@ def setup_torch_distributed_(rank, world_size, backend='nccl', timeout=120):
   dist.init_process_group(backend=backend, rank=rank, world_size=world_size, 
                           timeout=timedelta(seconds=timeout))
 
-def cleanup_torch_distributed_():
+def cleanup_torch_distributed():
   dist.destroy_process_group()
-
-def make_cuda_str(rank):
-  if type(rank) == int:
-    return f"cuda:{rank}"
-  return rank
 
 def make_dataset_mnist():
   transform = transforms.Compose([
@@ -240,25 +220,13 @@ def make_dataset_mnist():
   dataset2 = datasets.MNIST('../data', train=False, transform=transform)
   return dataset1, dataset2
 
-def make_dataset(name):
-  match name:
-    case 'mnist':
-      return make_dataset_mnist()
-
 def make_loaders(dataset, parallel, batch_size, test_batch_size, percent, **kwargs):
   match dataset, parallel:
     case 'mnist', True:
-      dprint(f"> making dataloader: mnist (parallel: {parallel})")
       rank = kwargs['rank']
       world_size = kwargs['world_size']
 
-      transform = transforms.Compose([
-          transforms.ToTensor(),
-          transforms.Normalize((0.1307,), (0.3081,))
-      ])
-      dataset1 = datasets.MNIST('../data', train=True, download=False, 
-                                transform=transform)
-      dataset2 = datasets.MNIST('../data', train=False, transform=transform)
+      dataset1, dataset2 = make_dataset_mnist()
       dataset1 = take_percent_data(dataset1, percent)
       dataset2 = take_percent_data(dataset2, percent)
       sampler1 = DistributedSampler(dataset1, rank=rank, 
@@ -275,32 +243,14 @@ def make_loaders(dataset, parallel, batch_size, test_batch_size, percent, **kwar
       test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
       return train_loader, test_loader, sampler1
     case 'mnist', False:
-      dprint(f"> making dataloader: mnist (parallel: {parallel})")
-      transform = transforms.Compose([
-          transforms.ToTensor(),
-          transforms.Normalize((0.1307,), (0.3081,))
-      ])
-      dataset1 = datasets.MNIST('../data', train=True, download=False, transform=transform)
-      dataset2 = datasets.MNIST('../data', train=False, transform=transform)
+      dataset1, dataset2 = make_dataset_mnist()
       dataset1 = take_percent_data(dataset1, percent)
       dataset2 = take_percent_data(dataset2, percent)
       train_loader = torch.utils.data.DataLoader(dataset1, batch_size=batch_size, shuffle=True, drop_last=True)
       test_loader = torch.utils.data.DataLoader(dataset2, batch_size=test_batch_size, shuffle=False, drop_last=True)
       return train_loader, test_loader, None
-    case 'mmidas', True:
-      raise NotImplementedError # TODO
-    case 'mmidas', False:
 
-      raise NotImplementedError # TODO
-    
-def mmidas_data():
-  ...
-
-def mmidas_dataloaders(batch_size):
-  ...
-  
 def make_model(name):
-  model = None
   match name:
     case 'net':
       model = Net()
@@ -314,23 +264,34 @@ def make_model(name):
       raise ValueError(f"invalid model: {name}")
   return model
 
+def make_wrap_policy(wrap, min_params=20000):
+  match wrap:
+    case 'size_based':
+      return functools.partial(size_based_auto_wrap_policy, min_num_params=20000)
+    case 'always':
+      return always_wrap_policy
+    case 'none':
+      return None
+    case _:
+      raise ValueError(f"invalid wrap policy: {wrap}")
+    
+def make_cpu_offload(offload):
+  if offload:
+    return CPUOffload(offload)
+  else:
+    return None
+  
+def to_fsdp(model, rank, wrap, min_params=20000, offload=None):
+  my_auto_wrap_policy = make_wrap_policy(wrap)
+  cpu_offload = make_cpu_offload(offload)
+  return FSDP(model, auto_wrap_policy=my_auto_wrap_policy, 
+              cpu_offload=cpu_offload, device_id=rank)
+
+
 def optimize_model(model, parallel, is_jit, rank, wrap, min_params=20000, offload=None):
   if parallel == 'fsdp':
-    my_auto_wrap_policy = None
-    match wrap:
-      case 'size_based':
-        my_auto_wrap_policy = functools.partial(
-          size_based_auto_wrap_policy, min_num_params=min_params
-        )
-      case 'always':
-        my_auto_wrap_policy = always_wrap_policy
-      case 'none':
-        my_auto_wrap_policy = None
-      case _:
-        raise ValueError(f"invalid wrap policy: {wrap}")
-    cpu_offload = CPUOffload(offload) if offload else None
-    # maybe pass in device_id
-    assert rank == torch.cuda.current_device()
+    my_auto_wrap_policy = make_wrap_policy(wrap)
+    cpu_offload = make_cpu_offload(offload)
     model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, 
                  cpu_offload=cpu_offload, use_orig_params=is_jit, 
                  device_id=rank)
@@ -441,29 +402,32 @@ def main(rank, world_size, config):
   parallel = 'parallel' in config
   master_rank = rank == 0 or not parallel
   run = None
-  mlogger = None
+  
   init_start_event = torch.cuda.Event(enable_timing=True)
   init_end_event = torch.cuda.Event(enable_timing=True)
   epoch_times = []
   mems = []
   rets = {}
   mems_tensor = torch.zeros(world_size, device=rank)
-  _name = get_device_name_or_empty(rank)
+  _name = ''
+  if rank == 'cuda' or isinstance(rank, int):
+    _name = torch.cuda.get_device_name(rank)
 
   if parallel:
     assert torch.cuda.is_available()
-    setup_torch_distributed_(rank, world_size, config.backend, config.timeout)
+    setup_torch_distributed(rank, world_size, config.backend, config.timeout)
     torch.cuda.set_device(rank)
     
-  dprint(f"> training on {make_cuda_str(rank)} {_name} \
+  dprint(f"> training on {rank} {_name} \
            (host: {os.uname().nodename})")
 
   if 'wandb' in config: 
     run = make_wandb('dist-mmidas', config.dataset, config.id, config)
 
+  mlogger = None
   if 'plot' in config and 'memory' in config.plot:
     mlogger = ResourceLogger(world_size, interval=config.interval, run=run,
-                            rank=rank)
+                             rank=rank)
     
   init_start_event.record()
   if 'profile' in config and master_rank:
@@ -475,17 +439,6 @@ def main(rank, world_size, config):
   epoch_times += rets['epoch_times']
   mems += rets['mems']
   model = rets['model']
-
-    # if args.record_memory_history:
-    #   torch.cuda.memory._record_memory_history()
-
-    # if args.log_after_epoch < 0 and mlogger is not None:
-    #   assert not mlogger.running
-    #   mlogger.start()
-
-    #   if args.log_after_epoch == epoch and mlogger is not None and i == 0:
-    #     assert not mlogger.running
-    #     mlogger.start()
   
   if mlogger:
     mlogger.stop()
@@ -518,7 +471,7 @@ def main(rank, world_size, config):
       dprint(f"avg memory allocated across all gpus: {avg(mems)}")
       
   if 'record_memory_history' in config:
-    record_memory_history(f"{time.time()}-{config.id}-{rank}.pickle")
+    end_record_memory_history(f"{time.time()}-{config.id}-{rank}.pickle")
 
   if rank == 0 or rank == 'cuda':
     torch.cuda.synchronize()
@@ -535,7 +488,7 @@ def main(rank, world_size, config):
       torch.save(model.state_dict(), "mnist_cnn.pt")
 
   if parallel:
-    cleanup_torch_distributed_()
+    cleanup_torch_distributed()
 
 if __name__ == '__main__':
     # Training settings
@@ -705,7 +658,7 @@ if __name__ == '__main__':
 # [] change the way I log memory
 # [] try out pytorch ignite
 # [] add config to wandb log
-# [] setup_torch_distributed_ github utils
+# [] setup_torch_distributed github utils
 # [] default cuda device of new thread is cuda:0
 
 # when num params is ~1mil, you don't see that much impact from
