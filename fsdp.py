@@ -5,12 +5,18 @@ import random
 import string
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from datetime import timedelta
 from functools import reduce
 from itertools import filterfalse
 
-import matplotlib.pyplot as plt
+# conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+# pip install pyrsistent wandb tqdm matplotlib
+# python fsdp.py --dataset mnist --model net --parallel none --epochs 5
+# python fsdp.py --dataset mnist --model net --world-size 2 --no-sampler --epochs 2
+
+# import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -28,99 +34,45 @@ import torch.overrides as overrides
 from torch.profiler import ProfilerActivity, profile, record_function
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
+from pyrsistent import PMap, PVector
+PMap.__call__ = lambda self, x: self[x]
+PVector.__call__ = lambda self, x: self[x]
+from pyrsistent import pmap
+from pyrsistent import pvector
 from pyrsistent import m
-from pyrsistent import pmap as prmap
-from pyrsistent import pvector as prvector
 from pyrsistent import v
 import wandb
 from tqdm import trange
 
 import mmidas
+from my_utils import conj, try_to_get, pprint, avg, dprint, make_path, random_string, convert, random_of
+from torch_utils import print_available_torch, ResourceLogger, count
 
-def try_to_get(obj, key, default=None):
-  v = obj.get(key, default)
-  return obj.set(key, v)
 
-def pprint(dct):
-  def format_value(v):
-    if isinstance(v, dict):
-      return '{' + ', '.join(f'{repr(k)}: {format_value(v)}' for k, v in v.items()) + '}'
-    elif isinstance(v, list):
-      return '[' + ', '.join(format_value(item) for item in v) + ']'
-    else:
-      return repr(v)
-
-  result = ''
-  for i, (k, v) in enumerate(sorted(dct.items(), key=lambda kv: kv[0])):
-    if i == 0:
-      result += "{"
-    else:
-      result += " "
-    result += f"{repr(k)}: {format_value(v)}"
-    if i < len(dct) - 1:
-      result += ',\n'
-  result += '}'
-  print(result)
-
-def wrap_in_sequence(x):
-  if not isinstance(x, tuple) or isinstance(x, list):
-    return prvector([x])
-  return x
-
-def data_take_percent(dataset, percent):
+def take_percent_data(dataset, percent):
   return torch.utils.data.Subset(dataset, list(range(int(len(dataset) * percent))))
-
-def check_path_exists_(path):
-  if not os.path.exists(path):
-    os.makedirs(path)
 
 def check_not_a100(rank, backend):
   assert not ("A100" in torch.cuda.get_device_name(rank) and backend == 'nccl')
 
 def record_memory_history(fname, folder='memory-snapshots'):
-  check_path_exists_(folder)
+  make_path(folder)
   fname = f"{folder}/{fname}"
   torch.cuda.memory._dump_snapshot(fname)
   dprint(f"> saved memory snapshot to {fname}")
 
-def starfilter(pred, iterable):
-  for args in iterable:
-    if pred(*args):
-      yield args
-
-def avg(xs):
-  return sum(xs) / len(xs)
-
-def bold(s):
-  match s:
-    case int(x):
-      return f"\033[1mrank {s}\033[0m"
-    case _:
-      return f"\033[1m{s}\033[0m"
-
-def call_if(pred, fun, *args, **kwargs):
-  if pred:
-    return fun(*args, **kwargs)
-  return None
-
-def call_if_in(keys, iterable, fun, *args, **kwargs):
-  return call_if(all(key in iterable for key in wrap_in_sequence(keys)),
-                 fun, *args, **kwargs)
-
+    
 def get_device_name_or_empty(rank):
   return torch.cuda.get_device_name(rank) if rank == 'cuda' \
          or isinstance(rank, int) else ''
 
-def count_params(model):
-  return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def make_wandb(project, task, id, config):
+def make_wandb(project, dataset, id, config):
   wandb.require('service')
-  return wandb.init(project=project, group=f"{task}-{id}", config=dict(config))
+  return wandb.init(project=project, group=f"{dataset}-{id}", config=dict(config))
 
 def make_run_config(parser):
-  config = prmap(filter_none(vars(parser.parse_args()).items()))
-  config = try_to_get(config, 'id', random_string(4))
+  config = pmap(filter_none(vars(parser.parse_args()).items()))
+  config = try_to_get(config, 'id', random_of('str', 4))
   return config
 
 def is_none(*xs):
@@ -140,68 +92,9 @@ def profile_run(rank, id):
       yield prof
   finally:
     print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100))
-    check_path_exists_('traces')
+    make_path('traces')
     prof.export_chrome_trace(f"trace-{time.time()}-{id}-{rank}.json")
 
-
-class MemoryLogger:
-  def __init__(self, world_size, interval=0.005, run=None, rank=None):
-    self.memory_allocated = []
-    self.max_memory_allocated = []
-    self.running = False
-    self.interval = interval
-    self.world_size = world_size
-    self.run = run
-    self.rank= rank 
-
-  def log_memory(self):
-    torch.cuda.set_device(self.rank)
-    while self.running:
-      self.memory_allocated.append(bytes_to_mb(torch.cuda.memory_allocated(self.rank)))
-      self.max_memory_allocated.append(bytes_to_mb(torch.cuda.max_memory_allocated(self.rank)))
-      if self.run is not None:
-        self.run.log({f'rank {self.rank} memalloc': self.memory_allocated[-1],
-                      f'rank {self.rank} max memalloc': self.max_memory_allocated[-1]})
-      time.sleep(self.interval)
-    mem_avg = avg(self.memory_allocated)
-    dprint(f"{bold(self.rank)}: average memory allocated: {mem_avg}MB")
-    if self.run is not None:
-      self.run.log({f'rank {self.rank} logger avg memalloc': mem_avg})
-    
-  def start(self):
-    dprint(f"{bold(self.rank)}: starting memory logger")
-    self.running = True
-    self.thread = threading.Thread(target=self.log_memory)
-    self.thread.start()
-
-  def stop(self):
-    dprint(f"{bold(self.rank)}: stopping memory logger")
-    self.running = False
-    self.thread.join()
-
-  def get(self):
-    assert not self.running
-    return self.memory_allocated
-
-def get_plotter(s):
-  match s:
-    case 'line':
-      return plt.plot
-    case 'scatter':
-      return plt.scatter
-    case _:
-      raise ValueError(f"invalid plot type: {s}")
-
-def take_uniform(lst, n):
-  return reduce(lambda output, i: output.append(lst[(len(lst) // n) * i]), 
-               range(min(n, len(lst))), 
-               v())
-
-def bytes_to_mb(bytes):
-  return bytes / 1024**2
-
-def random_string(n):
-  return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 # TODO
 def print_summary(epoch_avg, mem_avg, all_mem_avg, model):
@@ -297,8 +190,15 @@ class Net(nn.Module):
     output = F.log_softmax(x, dim=1)
     return output
 
+# TODO: make this work on general functions
 def plot(data, plot_t, xlabel, ylabel, title, legend, fname, folder=''):
-  plotter = get_plotter(plot_t)
+  if plot_t == 'line':
+    plotter = plt.plot
+  elif plot_t == 'scatter':
+    plotter = plt.scatter
+  else:
+    raise ValueError(f"invalid plot type: {plot_t}")
+  
   plotter(range(len(data)), data)
   plt.xlabel(xlabel)
   plt.ylabel(ylabel)
@@ -311,46 +211,14 @@ def plot(data, plot_t, xlabel, ylabel, title, legend, fname, folder=''):
   plt.close()
 
 
-def cached_dprint():
-  color_code = prmap({
-    'black': '30',
-    'red': '31',
-    'green': '32',
-    'yellow': '33',
-    'blue': '34',
-    'magenta': '35',
-    'cyan': '36',
-    'white': '37',
-  })
-  def dprint(*args, color=None, bold=False, italics=False, **kwargs):
-    if __debug__:
-      start_code = "\033["
-      end_code = "\033[0m"
-      codes = v()
-      if bold:
-        codes = codes.append('1')
-      if italics:
-        codes = codes.append('3')
-      if color is not None:
-        codes = codes.append(color_code[color])
-      if len(codes) > 0:
-        start_code += ';'.join(codes) + 'm'
-        print(start_code, end='')
-      print(*args, **kwargs)
-      print(end_code, end='')
-  return dprint
-
-dprint = cached_dprint()
-
-def params(model):
-  return prvector(model.parameters())
-
 def setup_torch_distributed_(rank, world_size, backend='nccl', timeout=120):
   os.environ['MASTER_ADDR'] = 'localhost'
   os.environ['MASTER_PORT'] = '12355'
   dprint(f"rank {rank} - master addr: {os.environ['MASTER_ADDR']}")
   dprint(f"rank {rank} - master port: {os.environ['MASTER_PORT']}")
-  check_not_a100(rank, backend)
+  # check_not_a100(rank, backend)
+  if backend == 'gloo':
+    dprint(f"warning: using gloo backend")
   dist.init_process_group(backend=backend, rank=rank, world_size=world_size, 
                           timeout=timedelta(seconds=timeout))
 
@@ -362,8 +230,23 @@ def make_cuda_str(rank):
     return f"cuda:{rank}"
   return rank
 
-def make_data_loaders(task, parallel, batch_size, test_batch_size, percent, **kwargs):
-  match task, parallel:
+def make_dataset_mnist():
+  transform = transforms.Compose([
+          transforms.ToTensor(),
+          transforms.Normalize((0.1307,), (0.3081,))
+      ])
+  dataset1 = datasets.MNIST('../data', train=True, download=False, 
+                            transform=transform)
+  dataset2 = datasets.MNIST('../data', train=False, transform=transform)
+  return dataset1, dataset2
+
+def make_dataset(name):
+  match name:
+    case 'mnist':
+      return make_dataset_mnist()
+
+def make_loaders(dataset, parallel, batch_size, test_batch_size, percent, **kwargs):
+  match dataset, parallel:
     case 'mnist', True:
       dprint(f"> making dataloader: mnist (parallel: {parallel})")
       rank = kwargs['rank']
@@ -376,8 +259,8 @@ def make_data_loaders(task, parallel, batch_size, test_batch_size, percent, **kw
       dataset1 = datasets.MNIST('../data', train=True, download=False, 
                                 transform=transform)
       dataset2 = datasets.MNIST('../data', train=False, transform=transform)
-      dataset1 = data_take_percent(dataset1, percent)
-      dataset2 = data_take_percent(dataset2, percent)
+      dataset1 = take_percent_data(dataset1, percent)
+      dataset2 = take_percent_data(dataset2, percent)
       sampler1 = DistributedSampler(dataset1, rank=rank, 
                                     num_replicas=world_size, shuffle=True)
       sampler2 = DistributedSampler(dataset2, rank=rank, 
@@ -392,15 +275,15 @@ def make_data_loaders(task, parallel, batch_size, test_batch_size, percent, **kw
       test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
       return train_loader, test_loader, sampler1
     case 'mnist', False:
-      dprint(f"> making dataloader: mnist (parallel {parallel})")
+      dprint(f"> making dataloader: mnist (parallel: {parallel})")
       transform = transforms.Compose([
           transforms.ToTensor(),
           transforms.Normalize((0.1307,), (0.3081,))
       ])
       dataset1 = datasets.MNIST('../data', train=True, download=False, transform=transform)
       dataset2 = datasets.MNIST('../data', train=False, transform=transform)
-      dataset1 = data_take_percent(dataset1, percent)
-      dataset2 = data_take_percent(dataset2, percent)
+      dataset1 = take_percent_data(dataset1, percent)
+      dataset2 = take_percent_data(dataset2, percent)
       train_loader = torch.utils.data.DataLoader(dataset1, batch_size=batch_size, shuffle=True, drop_last=True)
       test_loader = torch.utils.data.DataLoader(dataset2, batch_size=test_batch_size, shuffle=False, drop_last=True)
       return train_loader, test_loader, None
@@ -431,8 +314,8 @@ def make_model(name):
       raise ValueError(f"invalid model: {name}")
   return model
 
-def optimize_model(model, is_fsdp, is_jit, rank, wrap, min_params=1000, offload=None):
-  if is_fsdp:
+def optimize_model(model, parallel, is_jit, rank, wrap, min_params=20000, offload=None):
+  if parallel == 'fsdp':
     my_auto_wrap_policy = None
     match wrap:
       case 'size_based':
@@ -451,6 +334,8 @@ def optimize_model(model, is_fsdp, is_jit, rank, wrap, min_params=1000, offload=
     model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, 
                  cpu_offload=cpu_offload, use_orig_params=is_jit, 
                  device_id=rank)
+  elif parallel == 'ddp':
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
   if is_jit:
     model = torch.compile(model)
   return model
@@ -467,9 +352,9 @@ def train(model, rank, world_size, train_loader, optimizer, epoch, sampler=None,
     optimizer.zero_grad()
     output = model(data)
     loss = F.nll_loss(output, target, reduction='sum')
-    _mem_alloc = bytes_to_mb(torch.cuda.memory_allocated(rank))
+    _mem_alloc = convert(torch.cuda.memory_allocated(rank), 'B', 'MB')
     mem.append(_mem_alloc)
-    if run is not None:
+    if run:
       run.log({f'cuda {rank} memory allocated': _mem_alloc})
     loss.backward()
     optimizer.step()
@@ -480,12 +365,12 @@ def train(model, rank, world_size, train_loader, optimizer, epoch, sampler=None,
   if print_loss:
     dprint('Train Epoch: {} \tLoss: {:.6f}, \t Rank {} memory allocated: {}'.format(
       epoch, ddp_loss[0] / ddp_loss[1], rank, mem[-1]))
-  if run is not None:
+  if run:
     assert torch.cuda.max_memory_allocated() \
            == torch.cuda.max_memory_allocated(rank)
     run.log({'train_loss': ddp_loss[0] / ddp_loss[1],
              f'rank {rank} max memalloc': \
-                 bytes_to_mb(torch.cuda.max_memory_allocated(rank)),})
+                 convert(torch.cuda.max_memory_allocated(rank), 'B', 'MB'),})
   return mem
 
 def test(model, rank, world_size, test_loader, parallel=True, print_loss=True):
@@ -514,17 +399,19 @@ def start_run(rank, world_size, run, config):
   is_fsdp = 'parallel' in config and config.parallel == 'fsdp'
   master_rank = rank == 0 or not parallel
 
-  _loaders = make_data_loaders(task=config.task, 
+  _loaders = make_loaders(dataset=config.dataset, 
                                parallel=(parallel and 'sampler' in config),
                                batch_size=config.batch_size,
-                               test_batch_size=config.test_batch_size, rank=rank, 
+                               test_batch_size=config.test_batch_size, rank=rank,
                                world_size=world_size, percent=config.percent)
                                
   train_loader, test_loader, sampler = _loaders
   model = make_model(config.model)
   model = model.to(rank) if not is_fsdp else model
-  model = optimize_model(model, (is_fsdp and parallel), 'jit' in config, rank,
-                          config.wrap, config.min_params, 'cpu_offload' in config)
+  if parallel:
+    model = optimize_model(model, config.parallel, 'jit' in config, rank,
+                            config.wrap, config.min_params, 
+                            'cpu_offload' in config)
 
   optimizer = optim.Adadelta(model.parameters(), lr=config.lr)
   scheduler = StepLR(optimizer, step_size=1, gamma=config.gamma)
@@ -534,7 +421,8 @@ def start_run(rank, world_size, run, config):
     'epoch_times': [],
     'mems': [],
   }
-  pbar = trange(config.epochs, colour='red') if master_rank else range(config.epochs)
+  pbar = (trange(config.epochs, colour='red') if master_rank
+          else range(config.epochs))
   for epoch in pbar:
     start = time.time()
     rets['mems'] += train(model, rank, world_size, train_loader, 
@@ -545,15 +433,15 @@ def start_run(rank, world_size, run, config):
          print_loss=master_rank)
     scheduler.step()
     rets['epoch_times'].append(time.time() - start)
-    if run is not None:
+    if run:
       run.log({'seconds per epoch': rets['epoch_times'][-1]})
   return rets
 
 def main(rank, world_size, config):
   parallel = 'parallel' in config
   master_rank = rank == 0 or not parallel
-  run = False
-  mlogger = False
+  run = None
+  mlogger = None
   init_start_event = torch.cuda.Event(enable_timing=True)
   init_end_event = torch.cuda.Event(enable_timing=True)
   epoch_times = []
@@ -571,10 +459,10 @@ def main(rank, world_size, config):
            (host: {os.uname().nodename})")
 
   if 'wandb' in config: 
-    run = make_wandb('dist-mmidas', config.task, config.id, config)
+    run = make_wandb('dist-mmidas', config.dataset, config.id, config)
 
   if 'plot' in config and 'memory' in config.plot:
-    mlogger = MemoryLogger(world_size, interval=config.interval, run=run,
+    mlogger = ResourceLogger(world_size, interval=config.interval, run=run,
                             rank=rank)
     
   init_start_event.record()
@@ -638,7 +526,7 @@ def main(rank, world_size, config):
 
   if master_rank:
     dprint(f"{model}")
-    dprint(f"number of parameters: {count_params(model)}")
+    dprint(f"number of parameters: {count(model, 'params')}")
 
   if 'save_model' in config:
     if parallel:
@@ -689,8 +577,8 @@ if __name__ == '__main__':
                         help='log to wandb') # TODO
     parser.add_argument('--device', type=str, default='cuda', 
                         help='device to use (default: cuda)')
-    parser.add_argument('--task', type=str, default='mmidas', 
-                        help='name of the task to train on (default: mnist). \
+    parser.add_argument('--dataset', type=str, default='mmidas', 
+                        help='name of the dataset to train on (default: mnist). \
                         Options: smartseq, 10x, mnist') # TODO
     parser.add_argument('--no_fsdp', action='store_true', default=False, 
                         help='disable fsdp')
@@ -773,7 +661,7 @@ if __name__ == '__main__':
     dprint("config:", color='red', bold=True)
     pprint(config)
     dprint()
-    dprint(f"visible cuda devices: {os.environ['CUDA_VISIBLE_DEVICES']}")
+    dprint(f"visible cuda devices: {os.environ.get('CUDA_VISIBLE_DEVICES', 'None')}")
     if 'parallel' in config:
       world_size = config.get('world_size', torch.cuda.device_count())
       dprint(f"world size: {world_size}")
@@ -837,5 +725,3 @@ if __name__ == '__main__':
 
 # DeepNet: see if I can get to ~50 million params
 # multiple of 8 tensor sizes
-
-
