@@ -14,7 +14,14 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    FullStateDictConfig,
+    StateDictType,
+)
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     BackwardPrefetch, CPUOffload)
 from torch.distributed.fsdp.wrap import (enable_wrap,
@@ -99,7 +106,7 @@ def test(model, rank, world_size, test_loader):
 
 
 def ddp_main(rank, world_size, args):
-    print(f"Running basic FSDP example on rank {rank}.")
+    print(f"Running basic DDP example on rank {rank}.")
     setup(rank, world_size)
 
     transform=transforms.Compose([
@@ -205,7 +212,22 @@ def fsdp_main(rank, world_size, args):
 
     model = Net().to(rank)
 
-    model = FSDP(model)
+    fpSixteen = MixedPrecision(
+      param_dtype=torch.float16,
+      reduce_dtype=torch.float16,
+      buffer_dtype=torch.float16
+    )
+    bfSixteen = MixedPrecision(
+      param_dtype=torch.bfloat16,
+      reduce_dtype=torch.bfloat16,
+      buffer_dtype=torch.bfloat16
+    )
+    fp32_policy = MixedPrecision(
+      param_dtype=torch.float32,
+      reduce_dtype=torch.float32,
+      buffer_dtype=torch.float32
+    )
+    model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, mixed_precision=fpSixteen, backward_prefetch=BackwardPrefetch.
 
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 
