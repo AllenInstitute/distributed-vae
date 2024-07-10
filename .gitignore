@@ -4,5 +4,7 @@ wandb/
 memory-snapshots/
 memory-plots/
 traces/
+data/
+results/
 
 core.*

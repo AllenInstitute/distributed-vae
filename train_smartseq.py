@@ -1,41 +1,94 @@
 import argparse
 import os
 import numpy as np
+
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
+from pyrsistent import PMap, PVector
+PMap.__call__ = lambda self, x: self[x]
+PVector.__call__ = lambda self, x: self[x]
+from pyrsistent import pmap, m, pvector, v
+import importlib
 
-# Setup argument parser for command line arguments
-parser = argparse.ArgumentParser()
 
-# Define command line arguments
-parser.add_argument("--n_categories", default=120, type=int, help="(maximum) number of cell types")
-parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
-parser.add_argument("--n_arm", default=2, type=int, help="number of mixVAE arms for each modality")
-parser.add_argument("--temp", default=1, type=float, help="gumbel-softmax temperature")
-parser.add_argument("--tau", default=.005, type=float, help="softmax temperature")
-parser.add_argument("--beta", default=.01, type=float, help="KL regularization parameter")
-parser.add_argument("--lam", default=1, type=float, help="coupling factor")
-parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
-parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-parser.add_argument("--n_epoch", default=10000, type=int, help="Number of epochs to train")
-parser.add_argument("--n_epoch_p", default=10000, type=int, help="Number of epochs to train pruning algorithm")
-parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
-parser.add_argument("--max_prun_it", default=50, type=int, help="maximum number of pruning iterations")
-parser.add_argument("--ref_pc", default=False, type=bool, help="use a reference prior component")
-parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
-parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
-parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
-parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
-parser.add_argument("--lr", default=.001, type=float, help="learning rate")
-parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
-parser.add_argument("--s_drop", default=0.2, type=float, help="state probability of dropout")
-parser.add_argument("--pretrained_model", default=False, type=bool, help="use pretrained model")
-parser.add_argument("--n_pr", default=0, type=int, help="number of pruned categories in case of using a pretrained model")
-parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
-parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
-parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
-parser.add_argument("--device", default=None, type=int, help="computing device, either 'cpu' or 'cuda'.")
+def reload_imports(*imports):
+    results = {}
+    for i in imports:
+        if isinstance(i, str):
+            i = importlib.import_module(i)
+        importlib.reload(i)
+        results[i.__name__] = 'success'
+    return results
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def make_args(**kwargs):
+    return pmap({
+        'n_categories': kwargs.get('n_categories', 120),
+        'state_dim': kwargs.get('state_dim', 2),
+        'n_arm': kwargs.get('n_arm', 2),
+        'temp': kwargs.get('temp', 1),
+        'tau': kwargs.get('tau', .005),
+        'beta': kwargs.get('beta', .01),
+        'lam': kwargs.get('lam', 1),
+        'lam_pc': kwargs.get('lam_pc', 1),
+        'latent_dim': kwargs.get('latent_dim', 10),
+        'n_epoch': kwargs.get('n_epoch', 10000),
+        'n_epoch_p': kwargs.get('n_epoch_p', 10000),
+        'min_con': kwargs.get('min_con', .99),
+        'max_prun_it': kwargs.get('max_prun_it', 50),
+        'ref_pc': kwargs.get('ref_pc', False),
+        'fc_dim': kwargs.get('fc_dim', 100),
+        'batch_size': kwargs.get('batch_size', 5000),
+        'variational': kwargs.get('variational', True),
+        'augmentation': kwargs.get('augmentation', False),
+        'lr': kwargs.get('lr', .001),
+        'p_drop': kwargs.get('p_drop', 0.5),
+        's_drop': kwargs.get('s_drop', 0.2),
+        'pretrained_model': kwargs.get('pretrained_model', False),
+        'n_pr': kwargs.get('n_pr', 0),
+        'loss_mode': kwargs.get('loss_mode', 'MSE'),
+        'n_run': kwargs.get('n_run', 1),
+        'hard': kwargs.get('hard', False),
+        'device': kwargs.get('device', None),
+    })
+
+def _make_args(**kwargs):
+    return pmap({
+        'n_categories': kwargs.get('n_categories', 120),
+        'state_dim': kwargs.get('state_dim', 2),
+        'n_arm': kwargs.get('n_arm', 2),
+        'temp': kwargs.get('temp', 1),
+        'tau': kwargs.get('tau', .005),
+        'beta': kwargs.get('beta', .01),
+        'lam': kwargs.get('lam', 1),
+        'lam_pc': kwargs.get('lam_pc', 1),
+        'latent_dim': kwargs.get('latent_dim', 10),
+        'n_epoch': kwargs.get('n_epoch', 3),
+        'n_epoch_p': kwargs.get('n_epoch_p', 3),
+        'min_con': kwargs.get('min_con', .99),
+        'max_prun_it': kwargs.get('max_prun_it', 50),
+        'ref_pc': kwargs.get('ref_pc', False),
+        'fc_dim': kwargs.get('fc_dim', 100),
+        'batch_size': kwargs.get('batch_size', 5000),
+        'variational': kwargs.get('variational', True),
+        'augmentation': kwargs.get('augmentation', False),
+        'lr': kwargs.get('lr', .001),
+        'p_drop': kwargs.get('p_drop', 0.5),
+        's_drop': kwargs.get('s_drop', 0.2),
+        'pretrained_model': kwargs.get('pretrained_model', False),
+        'n_pr': kwargs.get('n_pr', 0),
+        'loss_mode': kwargs.get('loss_mode', 'MSE'),
+        'n_run': kwargs.get('n_run', 1),
+        'hard': kwargs.get('hard', False),
+        'device': kwargs.get('device', 'mps'),
+    })
 
 
 # Main function
@@ -112,5 +165,36 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
+    # Setup argument parser for command line arguments
+    parser = argparse.ArgumentParser()
+
+    # Define command line arguments
+    parser.add_argument("--n_categories", default=120, type=int, help="(maximum) number of cell types")
+    parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
+    parser.add_argument("--n_arm", default=2, type=int, help="number of mixVAE arms for each modality")
+    parser.add_argument("--temp", default=1, type=float, help="gumbel-softmax temperature")
+    parser.add_argument("--tau", default=.005, type=float, help="softmax temperature")
+    parser.add_argument("--beta", default=.01, type=float, help="KL regularization parameter")
+    parser.add_argument("--lam", default=1, type=float, help="coupling factor")
+    parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
+    parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
+    parser.add_argument("--n_epoch", default=3, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch_p", default=10000, type=int, help="Number of epochs to train pruning algorithm")
+    parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
+    parser.add_argument("--max_prun_it", default=50, type=int, help="maximum number of pruning iterations")
+    parser.add_argument("--ref_pc", default=False, type=bool, help="use a reference prior component")
+    parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
+    parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
+    parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
+    parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
+    parser.add_argument("--lr", default=.001, type=float, help="learning rate")
+    parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
+    parser.add_argument("--s_drop", default=0.2, type=float, help="state probability of dropout")
+    parser.add_argument("--pretrained_model", default=False, type=bool, help="use pretrained model")
+    parser.add_argument("--n_pr", default=0, type=int, help="number of pruned categories in case of using a pretrained model")
+    parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
+    parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
+    parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
+    parser.add_argument("--device", default='mps', type=str, help="computing device, either 'cpu' or 'cuda'.")
     args = parser.parse_args()
     main(**vars(args))
