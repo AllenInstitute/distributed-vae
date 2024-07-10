@@ -227,7 +227,7 @@ def fsdp_main(rank, world_size, args):
       reduce_dtype=torch.float32,
       buffer_dtype=torch.float32
     )
-    model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, mixed_precision=fpSixteen, backward_prefetch=BackwardPrefetch.
+    model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy)
 
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 
