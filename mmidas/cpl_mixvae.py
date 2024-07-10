@@ -1,6 +1,7 @@
 import pickle
 import numpy as np
 from sklearn.metrics.cluster import adjusted_rand_score
+import random
 import time
 import torch
 from torch.autograd import Variable
@@ -11,6 +12,15 @@ from sklearn.model_selection import train_test_split
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
+from tqdm import trange
+
+def set_seed(seed):
+    print(f'setting seed: {seed}')
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class cpl_mixVAE:
@@ -40,6 +50,8 @@ class cpl_mixVAE:
             if device == 'cpu':
                 self.device = torch.device('cpu')
                 print('---> Using CPU!')
+            elif device == 'mps':
+                self.device = torch.device('mps')
             else:
                 self.device = torch.device(torch.cuda.current_device())
                 torch.cuda.set_device(self.device)
@@ -134,6 +146,8 @@ class cpl_mixVAE:
             momentum: a hyperparameter for batch normalization that updates its running statistics.
             mode: the loss function, either 'MSE' or 'ZINB'.
         """
+        seed = 546
+        set_seed(seed)
         self.lowD_dim = lowD_dim
         self.n_categories = n_categories
         self.state_dim = state_dim
@@ -218,7 +232,7 @@ class cpl_mixVAE:
 
         if self.init:
             print("Start training ...")
-            for epoch in range(n_epoch):
+            for epoch in trange(n_epoch):
                 train_loss_val = 0
                 train_jointloss_val = 0
                 train_dqc = 0
@@ -465,6 +479,8 @@ class cpl_mixVAE:
                 print('No more pruning!')
                 stop_prune = True
 
+            print("warning: disabled pruning")
+            stop_prune = True
             if not stop_prune:
                 print("Continue training with pruning ...")
                 print(f"Pruned categories: {ind}")
@@ -488,7 +504,7 @@ class cpl_mixVAE:
                     prune.custom_from_mask(self.model.fc_sigma[arm], 'weight', mask=fc_sigma)
                     prune.custom_from_mask(self.model.fc6[arm], 'weight', mask=f6_mask)
 
-                for epoch in range(n_epoch_p):
+                for epoch in trange(n_epoch_p):
                     # training
                     train_loss_val = 0
                     train_jointloss_val = 0
