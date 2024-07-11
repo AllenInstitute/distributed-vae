@@ -1,5 +1,6 @@
 # Based on: https://github.com/pytorch/examples/blob/master/mnist/main.py
 import argparse
+import datetime
 import functools
 import time
 import os
@@ -34,7 +35,7 @@ from torchvision import datasets, transforms
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=30))
 
 def cleanup():
     dist.destroy_process_group()
@@ -294,7 +295,8 @@ if __name__ == '__main__':
 
     torch.manual_seed(args.seed)
 
-    WORLD_SIZE = torch.cuda.device_count()
+    # WORLD_SIZE = torch.cuda.device_count()
+    WORLD_SIZE = 2
     mp.spawn(fsdp_main,
         args=(WORLD_SIZE, args),
         nprocs=WORLD_SIZE,

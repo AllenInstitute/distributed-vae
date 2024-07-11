@@ -179,7 +179,9 @@ def fsdp_main(args):
         rank = args.local_rank
     else:
         assert 'SLURM_PROCID' in os.environ
-        rank = int(os.environ['SLURM_PROCID'])
+        rank = int(os.environ['LOCAL_RANK'])
+        # rank = int(os.environ['SLURM_PROCID'])
+        # rank = int(os.environ['SLURM_PROCID'])s
     print(f"Running basic FSDP example on rank {rank}.")
     setup(rank, world_size)
 
