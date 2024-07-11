@@ -6,5 +6,6 @@ memory-plots/
 traces/
 data/
 results/
+lightning_logs/
 
 core.*
