@@ -7,5 +7,6 @@ traces/
 data/
 results/
 lightning_logs/
+pl-mnist/
 
 core.*
