@@ -166,6 +166,7 @@ def pl_main(args):
                   'pin_memory': True,
                   'shuffle': False,
                   'drop_last': True}
+                  
   train_kwargs.update(cuda_kwargs)
   test_kwargs.update(cuda_kwargs)
   train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
@@ -175,7 +176,16 @@ def pl_main(args):
   wandb_logger = WandbLogger(project='pl-mnist')
   if isinstance(wandb_logger.experiment.config, dict):
     wandb_logger.experiment.config.update(args)
-  trainer = L.Trainer(max_epochs=args.epochs, devices=args.devices, strategy='fsdp', use_distributed_sampler=(not args.no_sampler), logger=wandb_logger)
+  use_distributed_sampler = not args.no_sampler
+
+  trainer = L.Trainer(max_epochs=args.epochs, 
+                      # devices=args.devices, 
+                      devices=[1, 3],
+                      num_nodes=args.num_nodes,
+                      strategy='fsdp', 
+                      use_distributed_sampler=use_distributed_sampler, 
+                      logger=wandb_logger)
+                      
   trainer.fit(model, train_loader, test_loader)
   
   entity = wandb_logger.experiment.entity
@@ -235,6 +245,8 @@ if __name__ == '__main__':
                         help='Comma-separated list of device ids to use. Use -1 for all.')
     parser.add_argument('--model', type=str, default='net',
                         help='Model to use: net or deep')
+    parser.add_argument('--num_nodes', type=int, default=1,
+                        help='Number of nodes')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -244,3 +256,25 @@ if __name__ == '__main__':
 # [] creating CudaAccelerator?
 # [] maybe has to do with data loading? test is really slow
 # [] try find free network port
+# [] try `export NCCL_SOCKET_IFNAME`
+# [] run lightning with `NCCL_DEBUG=INFO`
+# [] run with `NCCL_DEBUG_SUBSYS`
+#   [] INIT
+#   [] COLL
+#   [] P2P
+#   [] SHM
+#   [] NET
+#   [] GRAPH
+#   [] TUNING
+#   [] ENV
+#   [] ALLOC
+#   [] ALL
+# [] TORCH_CPP_LOG_LEVEL=INFO
+  # [] TORCH_DISTRIBUTED_DEBUG
+# [] TORCH_SHOW_CPP_STACKTRACES
+# [] try using distributed debugger
+# [] try commenting out fit()
+# [] PYTORCH_NVML_BASED_CUDA_CHECK
+
+# [] write some babashka terminal scripts for checking nodes
+# [] check lambda labs nccl environmental variables

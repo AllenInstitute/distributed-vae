@@ -1,14 +1,17 @@
 # Based on: https://github.com/pytorch/examples/blob/master/mnist/main.py
 import argparse
+import builtins
 import datetime
-import functools
+from functools import partial, reduce
 import time
 import os
 
 from pyrsistent import m, v, pmap, pvector, PMap, PVector
-PMap.__call__ = lambda self, x: self[x]
-PVector.__call__ = lambda self, x: self[x]
-from tqdm import trange
+def set_call_(cls, fun):
+    cls.__call__ = fun
+set_call_(PMap, lambda self, x: self[x])
+set_call_(PVector, lambda self, x: self[x])
+from tqdm import tqdm
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -32,15 +35,117 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 
-def setup(rank, world_size):
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    # os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=30))
+def set_seed_(seed):
+   torch.manual_seed(seed)
 
-def cleanup():
+def set_gpu_(rank):
+    torch.cuda.set_device(rank)
+
+def is_train(mode):
+  return mode == 'train'
+
+def is_eval(mode):
+  return mode == 'eval'
+
+def set_mode_(model, mode):
+  if is_train(mode):
+    model.train()
+  elif is_eval(mode):
+    model.eval()
+  else:
+    raise ValueError(f"Unknown mode: {mode}")
+
+def print_gpu():
+  print(f"cuda device: {torch.cuda.current_device()}")
+
+def count_gpus():
+  return torch.cuda.device_count()
+
+def setup_print_(rank):
+  builtins.print = partial(print, f"[rank {rank}]")
+
+def set_environ_flags_():
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = str(12355)
+    os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
+    os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
+
+def setup_process_group_(rank, world_size):
+   dist.init_process_group('nccl', rank=rank, world_size=world_size, 
+                           timeout=datetime.timedelta(seconds=60))
+  
+def cleanup_process_group_():
     dist.destroy_process_group()
+
+def setup_distributed_(rank, world_size):
+  set_environ_flags_()
+  setup_process_group_(rank, world_size)
+
+def cleanup_distributed_():
+  dist.destroy_process_group()
+
+def is_sum(op):
+  return op == 'sum'
+
+def is_product(op):
+  return op == 'product'
+
+def is_min(op):
+  return op == 'min'
+
+def is_max(op):
+  return op == 'max'
+
+def make_reduce_op(op):
+  if is_sum(op):
+    return dist.ReduceOp.SUM
+  elif is_product(op):
+    return dist.ReduceOp.PRODUCT
+  elif is_min(op):
+    return dist.ReduceOp.MIN
+  elif is_max(op):
+    return dist.ReduceOp.MAX
+  else:
+    raise ValueError(f"Unknown reduce op: {op}")
+  
+def all_reduce_(tensor, op='sum'):
+  dist.all_reduce(tensor, op=make_reduce_op(op))
+
+def print_train_loss(train_loss, epoch, rank):
+   if is_master_rank(rank):
+      print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, train_loss[0] / train_loss[1]))
+
+def print_test_loss(test_loss, rank):
+    if is_master_rank(rank):
+        avg_loss = test_loss[0] / test_loss[2]
+        accuracy = 100. * test_loss[1] / test_loss[2]
+        print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
+            avg_loss, int(test_loss[1]), int(test_loss[2]), accuracy))
+
+def print_epoch(epoch, time, rank):
+  if is_master_rank(rank):
+      print(f"Epoch {epoch} took {time}sec")
+
+def synchronize_gpus_():
+  torch.cuda.synchronize()
+
+def cuda_elapsed_time(start_event, end_event):
+  return start_event.elapsed_time(end_event) / 1000
+
+def print_cuda_elapsed_time(time):
+  print(f"CUDA event elapsed time: {time}sec")
+
+def print_summary(time, model, rank):
+  if is_master_rank(rank):
+    print_cuda_elapsed_time(time)
+    print(f"{model}")
+
+def make_cuda_event():
+  return torch.cuda.Event(enable_timing=True)
+
+def fsdp(*args, **kwargs):
+  return FSDP(*args, **kwargs)
 
 class Net(nn.Module):
   def __init__(self):
@@ -67,144 +172,274 @@ class Net(nn.Module):
     output = F.log_softmax(x, dim=1)
     return output
 
-def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=None):
-    model.train()
-    ddp_loss = torch.zeros(2).to(rank)
+class DeepNet(nn.Module):
+  def __init__(self):
+    super(DeepNet, self).__init__()
+    self.conv1 = nn.Conv2d(1, 32, 3, 1)
+    self.conv2 = nn.Conv2d(32, 64, 3, 1)
+    self.dropout1 = nn.Dropout(0.25)
+    self.dropout2 = nn.Dropout(0.5)
+    self.fc1 = nn.Linear(9216, 9000)
+    self.fc1a = nn.Linear(9000, 1000)
+    self.fc1b = nn.Linear(1000, 1000)
+    self.fc1c = nn.Linear(1000, 1000)
+    self.fc1d = nn.Linear(1000, 128)
+    self.fc2 = nn.Linear(128, 10)
+
+  def forward(self, x):
+    x = self.conv1(x)
+    x = F.relu(x)
+    x = self.conv2(x)
+    x = F.relu(x)
+    x = F.max_pool2d(x, 2)
+    x = self.dropout1(x)
+    x = torch.flatten(x, 1)
+    x = self.fc1(x)
+    x = F.relu(x)
+    x = self.dropout2(x)
+    x = self.fc1a(x)
+    x = self.fc1b(x)
+    x = self.fc1c(x)
+    x = self.fc1d(x)
+    x = self.fc2(x)
+    output = F.log_softmax(x, dim=1)
+    return output
+  
+def make_model(s, rank):
+  if s == 'shallow':
+    model = Net()
+  elif s == 'deep':
+    model = DeepNet()
+  else:
+    raise ValueError(f"Unknown model: {s}")
+  return model.to(rank)
+
+def make_optimizer(model, lr):
+  if is_mnist_net(model):
+    return optim.Adadelta(model.parameters(), lr=lr)
+  else:
+    raise ValueError(f"Unknown model: {model}")
+  
+def is_fp16(p):
+  return p == 'fp16'
+
+def is_bf16(p):
+  return p == 'bf16'
+
+def is_fp32(p):
+  return p == 'fp32'
+
+def string_to_dtype(s):
+  if s == 'fp16':
+    return torch.float16
+  elif s == 'bf16':
+    return torch.bfloat16
+  elif s == 'fp32':
+    return torch.float32
+  else:
+    raise ValueError(f"Unknown dtype: {s}")
+
+def make_mixed_precision(p):
+  dtype = string_to_dtype(p)
+  return MixedPrecision(
+    param_dtype=dtype,
+    reduce_dtype=dtype,
+    buffer_dtype=dtype
+  )
+
+def make_wrap_policy(params):
+  return partial(size_based_auto_wrap_policy, min_num_params=params)
+   
+def is_master_rank(rank):
+    return rank == 0
+
+def transform_loader(loader, *funs):
+    return reduce(lambda acc, f: f(acc), funs, loader)
+
+def make_pbar(loader, rank, *funs):
+    total = len(loader)
+    loader = transform_loader(loader, *funs)
+    if is_master_rank(rank):
+        return tqdm(loader, total=total, unit_scale=True)
+    else:
+        return loader
+    
+def make_loader_config(**kwargs):
+   return pmap(kwargs)
+
+def make_loader(loader, **config):
+    return torch.utils.data.DataLoader(loader, **config)
+
+def is_shallow_net(model):
+  return isinstance(module(model), Net)
+
+def module(model):
+  if is_parallelized(model):
+    return module(model.module)
+  else:
+    return model
+
+def is_deep_net(model):
+  return isinstance(module(model), DeepNet)
+
+def is_fsdp(model):
+    return isinstance(model, FSDP)
+
+def is_ddp(model):
+    return isinstance(model, DDP)
+
+def is_parallelized(model):
+    return is_fsdp(model) or is_ddp(model)
+
+def is_mnist_net(model):
+  return is_shallow_net(module(model)) or is_deep_net(module(model))
+    
+def make_train_loss(model, rank):
+    if is_mnist_net(model):
+        return torch.zeros(2).to(rank)
+    else:
+       raise ValueError(f"Unknown model: {model}")
+
+def make_test_loss(model, rank):
+    if is_mnist_net(model):
+        return torch.zeros(3).to(rank)
+    else:
+       raise ValueError(f"Unknown model: {model}")
+    
+def make_data_transform():
+  return transforms.Compose([
+      transforms.ToTensor(),
+      transforms.Normalize((0.1307,), (0.3081,))
+  ])
+
+def make_train_data(transform):
+  return datasets.MNIST('../data', train=True, download=True,
+                  transform=transform)
+
+def make_test_data(transform):
+  return datasets.MNIST('../data', train=False,
+                  transform=transform)
+
+def make_dist_sampler(data, rank, world_size, shuffle=True):
+  return DistributedSampler(data, rank=rank, num_replicas=world_size, shuffle=shuffle)
+
+def record_cuda_event_(event):
+  event.record()
+
+def barrier_distributed_():
+  dist.barrier()
+
+def save_model_(model, rank):
+  if is_master_rank(rank):
+    torch.save(model.state_dict(), "mnist_cnn.pt")
+
+def step_(o):
+  o.step()
+
+def train_(model, rank, train_loader, optimizer, epoch, sampler=None):
+    set_mode_(model, 'train')
+    ddp_loss = make_train_loss(model, rank)
     if sampler:
         sampler.set_epoch(epoch)
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data, target) in make_pbar(train_loader, rank, enumerate):
         data, target = data.to(rank), target.to(rank)
         optimizer.zero_grad()
         output = model(data)
         loss = F.nll_loss(output, target, reduction='sum')
         loss.backward()
-        optimizer.step()
+        step_(optimizer)
         ddp_loss[0] += loss.item()
         ddp_loss[1] += len(data)
 
-    dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
-    if rank == 0:
-        print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, ddp_loss[0] / ddp_loss[1]))
+    all_reduce_(ddp_loss, op='sum')
+    print_train_loss(ddp_loss, epoch, rank)
 
-def test(model, rank, world_size, test_loader):
-    model.eval()
-    correct = 0
-    ddp_loss = torch.zeros(3).to(rank)
+def test(model, rank, test_loader):
+    set_mode_(model, 'eval')
+    ddp_loss = make_test_loss(model, rank)
     with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(rank), target.to(rank)
-            output = model(data)
-            ddp_loss[0] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-            ddp_loss[1] += pred.eq(target.view_as(pred)).sum().item()
-            ddp_loss[2] += len(data)
+      for data, target in make_pbar(test_loader, rank):
+        data, target = data.to(rank), target.to(rank)
+        output = model(data)
+        ddp_loss[0] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+        pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+        ddp_loss[1] += pred.eq(target.view_as(pred)).sum().item()
+        ddp_loss[2] += len(data)
 
-    dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
-
-    if rank == 0:
-        test_loss = ddp_loss[0] / ddp_loss[2]
-        print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-            test_loss, int(ddp_loss[1]), int(ddp_loss[2]),
-            100. * ddp_loss[1] / ddp_loss[2]))
+    all_reduce_(ddp_loss, op='sum')
+    print_test_loss(ddp_loss, rank)
 
 
 def fsdp_main(rank, world_size, args):
-    print(f"Running basic FSDP example on rank {rank}.")
-    setup(rank, world_size)
+    setup_print_(rank)
+    print(f"starting...")
+    setup_distributed_(rank, world_size)
 
-    transform=transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
+    transform = make_data_transform()
+    train_data = make_train_data(transform)
+    test_data = make_test_data(transform)
 
-    dataset1 = datasets.MNIST('../data', train=True, download=True,
-                        transform=transform)
-    dataset2 = datasets.MNIST('../data', train=False,
-                        transform=transform)
+    train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=True)
+    test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
 
-    sampler1 = DistributedSampler(dataset1, rank=rank, num_replicas=world_size, shuffle=True)
-    sampler2 = DistributedSampler(dataset2, rank=rank, num_replicas=world_size)
-
-    train_kwargs = {'batch_size': args.batch_size, 'sampler': sampler1}
-    test_kwargs = {'batch_size': args.test_batch_size, 'sampler': sampler2}
     cuda_kwargs = {'num_workers': 2,
                     'pin_memory': True,
                     'shuffle': False,
-                    'drop_last': True}
-    train_kwargs.update(cuda_kwargs)
-    test_kwargs.update(cuda_kwargs)
+                    'drop_last': True,
+                    'persistent_workers': True, # this is important!!!
+                    }
+    train_loader_config = make_loader_config(batch_size=args.batch_size, 
+                                             sampler=train_sampler, **cuda_kwargs)
+    test_loader_config = make_loader_config(batch_size=args.test_batch_size,
+                                            sampler=test_sampler, **cuda_kwargs)
 
-    train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
-    test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
-    my_auto_wrap_policy = functools.partial(
-        size_based_auto_wrap_policy, min_num_params=100
-    )
-    torch.cuda.set_device(rank)
+    train_loader = make_loader(train_data, **train_loader_config)
+    test_loader = make_loader(test_data, **test_loader_config)
+    set_gpu_(rank)
 
+    start_event = make_cuda_event()
+    end_event = make_cuda_event()
 
-    init_start_event = torch.cuda.Event(enable_timing=True)
-    init_end_event = torch.cuda.Event(enable_timing=True)
+    model = make_model(args.model, rank)
+    model = fsdp(model, auto_wrap_policy=make_wrap_policy(100))
+    optimizer = make_optimizer(model, args.lr)
 
-    model = Net().to(rank)
-
-    fpSixteen = MixedPrecision(
-      param_dtype=torch.float16,
-      reduce_dtype=torch.float16,
-      buffer_dtype=torch.float16
-    )
-    bfSixteen = MixedPrecision(
-      param_dtype=torch.bfloat16,
-      reduce_dtype=torch.bfloat16,
-      buffer_dtype=torch.bfloat16
-    )
-    fp32_policy = MixedPrecision(
-      param_dtype=torch.float32,
-      reduce_dtype=torch.float32,
-      buffer_dtype=torch.float32
-    )
-    model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy)
-
-    optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
-
-    # scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
-    init_start_event.record()
-    pbar = trange(args.epochs) if rank == 0 else range(args.epochs)
+    scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+    record_cuda_event_(start_event)
     for epoch in range(args.epochs):
         t0 = time.time()
-        train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=sampler1)
-        # test(model, rank, world_size, test_loader)
-        # scheduler.step()
-        t1 = time.time()
-        if rank == 0:
-            print(f"Epoch {epoch} took {t1 - t0}sec")
+        train_(model, rank, train_loader, optimizer, epoch, sampler=train_sampler)
+        test(model, rank, test_loader)
+        step_(scheduler)
+        print_epoch(epoch, time.time() - t0, rank)
+    record_cuda_event_(end_event)
 
-    init_end_event.record()
-
-    if rank == 0:
-        print(f"CUDA event elapsed time: {init_start_event.elapsed_time(init_end_event) / 1000}sec")
-        print(f"{model}")
+    synchronize_gpus_()
+    print_summary(cuda_elapsed_time(start_event, end_event), 
+                  model, rank)
 
     if args.save_model:
         # use a barrier to make sure training is done on all ranks
-        dist.barrier()
-        states = model.state_dict()
-        if rank == 0:
-            torch.save(states, "mnist_cnn.pt")
+        barrier_distributed_()
+        save_model_(model, rank)
 
-    cleanup()
+    cleanup_distributed_()
 
-def make_config(**kwargs):
-  return pmap({
-    'batch_size': kwargs.get('batch_size', 64),
-    'test_batch_size': kwargs.get('test_batch_size', 1000),
-    'epochs': kwargs.get('epochs', 10),
-    'lr': kwargs.get('lr', 1.0),
-    'gamma': kwargs.get('gamma', 0.7),
-    'no_cuda': kwargs.get('no_cuda', False),
-    'seed': kwargs.get('seed', 1),
-    'save_model': kwargs.get('save_model', False),
-  })
+def make_args(parser, **kwargs):
+  return parser.parse_args()
+  # return pmap({
+  #   'batch_size': kwargs.get('batch_size', 64),
+  #   'test_batch_size': kwargs.get('test_batch_size', 1000),
+  #   'epochs': kwargs.get('epochs', 10),
+  #   'lr': kwargs.get('lr', 1.0),
+  #   'gamma': kwargs.get('gamma', 0.7),
+  #   'no_cuda': kwargs.get('no_cuda', False),
+  #   'seed': kwargs.get('seed', 1),
+  #   'save_model': kwargs.get('save_model', False),
+  # })
 
+def spawn_processes_(fun, world_size, args):
+    mp.spawn(fun, args=(world_size, args), nprocs=world_size, join=True)
 
 if __name__ == '__main__':
     # Training settings
@@ -225,13 +460,11 @@ if __name__ == '__main__':
                         help='random seed (default: 1)')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
-    args = parser.parse_args()
+    parser.add_argument('--model', type=str, default='shallow', metavar='M',
+                        help='Model to use: shallow, deep')
+    args = make_args(parser)
+    set_seed_(args.seed)
 
-    torch.manual_seed(args.seed)
+    world_size = count_gpus()
+    spawn_processes_(fsdp_main, world_size, args)
 
-    # WORLD_SIZE = torch.cuda.device_count()
-    WORLD_SIZE = torch.cuda.device_count()
-    mp.spawn(fsdp_main,
-        args=(WORLD_SIZE, args),
-        nprocs=WORLD_SIZE,
-        join=True)

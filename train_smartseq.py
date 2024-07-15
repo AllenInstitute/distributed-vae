@@ -5,21 +5,16 @@ import numpy as np
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
+
 from pyrsistent import PMap, PVector
-PMap.__call__ = lambda self, x: self[x]
-PVector.__call__ = lambda self, x: self[x]
+def set_call_(cls, fun):
+    cls.__call__ = fun
+set_call_(PMap, lambda self, x: self[x])
+set_call_(PVector, lambda self, x: self[x])
+
 from pyrsistent import pmap, m, pvector, v
-import importlib
+import torch
 
-
-def reload_imports(*imports):
-    results = {}
-    for i in imports:
-        if isinstance(i, str):
-            i = importlib.import_module(i)
-        importlib.reload(i)
-        results[i.__name__] = 'success'
-    return results
 
 def set_seed(seed):
     random.seed(seed)
@@ -59,36 +54,8 @@ def make_args(**kwargs):
         'device': kwargs.get('device', None),
     })
 
-def _make_args(**kwargs):
-    return pmap({
-        'n_categories': kwargs.get('n_categories', 120),
-        'state_dim': kwargs.get('state_dim', 2),
-        'n_arm': kwargs.get('n_arm', 2),
-        'temp': kwargs.get('temp', 1),
-        'tau': kwargs.get('tau', .005),
-        'beta': kwargs.get('beta', .01),
-        'lam': kwargs.get('lam', 1),
-        'lam_pc': kwargs.get('lam_pc', 1),
-        'latent_dim': kwargs.get('latent_dim', 10),
-        'n_epoch': kwargs.get('n_epoch', 3),
-        'n_epoch_p': kwargs.get('n_epoch_p', 3),
-        'min_con': kwargs.get('min_con', .99),
-        'max_prun_it': kwargs.get('max_prun_it', 50),
-        'ref_pc': kwargs.get('ref_pc', False),
-        'fc_dim': kwargs.get('fc_dim', 100),
-        'batch_size': kwargs.get('batch_size', 5000),
-        'variational': kwargs.get('variational', True),
-        'augmentation': kwargs.get('augmentation', False),
-        'lr': kwargs.get('lr', .001),
-        'p_drop': kwargs.get('p_drop', 0.5),
-        's_drop': kwargs.get('s_drop', 0.2),
-        'pretrained_model': kwargs.get('pretrained_model', False),
-        'n_pr': kwargs.get('n_pr', 0),
-        'loss_mode': kwargs.get('loss_mode', 'MSE'),
-        'n_run': kwargs.get('n_run', 1),
-        'hard': kwargs.get('hard', False),
-        'device': kwargs.get('device', 'mps'),
-    })
+def fsdp_main(rank, world_size, args):
+    ...
 
 
 # Main function
@@ -153,7 +120,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                          mode=loss_mode)
 
     # Train and save the model
-    model_file = cplMixVAE.train(train_loader=trainloader,
+    model_file = cplMixVAE.train_(train_loader=trainloader,
                                  test_loader=testloader,
                                  n_epoch=n_epoch,
                                  n_epoch_p=n_epoch_p,
@@ -195,6 +162,6 @@ if __name__ == "__main__":
     parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
     parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
-    parser.add_argument("--device", default='mps', type=str, help="computing device, either 'cpu' or 'cuda'.")
+    parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
     args = parser.parse_args()
     main(**vars(args))
