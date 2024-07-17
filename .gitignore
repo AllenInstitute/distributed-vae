@@ -8,5 +8,9 @@ data/
 results/
 lightning_logs/
 pl-mnist/
+.vscode/
+__pycache__/
+mmidas/utils/__pycache__/
 
 core.*
+run.py

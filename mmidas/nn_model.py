@@ -530,22 +530,6 @@ class mixVAE_model(nn.Module):
 
         loss = scaler * sum(loss_indep) + loss_joint
 
-        _la = loss 
-        _lb = l_rec
-        _lc = loss_joint
-        _ld = sum(neg_joint_entropy) / n_comb
-        _le = sum(z_distance) / n_comb
-        _lf = sum(z_distance_rep) / n_comb
-        _lg = KLD_cont
-        _lh = var_qz0.min()
-        _li = loglikelihood
-
-        # _out = loss_fn(x=x, x_rec=recon_x, x_succ=p_x, x_disp=r_x, s_mean=mu,
-        #                s_logvar=log_sigma, c_pdf=qc, c_samp=c, c_prior=prior_c,
-        #                A=self.n_arm, mode=self.loss_mode, is_var=self.varitional,
-        #                beta=self.beta, eps=self.eps, C=self.n_categories, 
-        #                lam=self.lam, lam_pc=self.lam_pc, pri=self.ref_prior, device=self.device)
-
         return loss, l_rec, loss_joint, sum(neg_joint_entropy) / n_comb, sum(z_distance) / n_comb, sum(z_distance_rep) / n_comb, KLD_cont, var_qz0.min(), loglikelihood
 
 

@@ -35,6 +35,9 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 
+def is_imported(m):
+  return m in globals()
+
 def set_seed_(seed):
    torch.manual_seed(seed)
 
@@ -71,9 +74,12 @@ def set_environ_flags_():
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
 
+def make_timeout(s):
+  return datetime.timedelta(seconds=s)
+
 def setup_process_group_(rank, world_size):
    dist.init_process_group('nccl', rank=rank, world_size=world_size, 
-                           timeout=datetime.timedelta(seconds=60))
+                           timeout=make_timeout(60))
   
 def cleanup_process_group_():
     dist.destroy_process_group()
@@ -113,18 +119,18 @@ def all_reduce_(tensor, op='sum'):
   dist.all_reduce(tensor, op=make_reduce_op(op))
 
 def print_train_loss(train_loss, epoch, rank):
-   if is_master_rank(rank):
+   if is_master(rank):
       print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, train_loss[0] / train_loss[1]))
 
 def print_test_loss(test_loss, rank):
-    if is_master_rank(rank):
+    if is_master(rank):
         avg_loss = test_loss[0] / test_loss[2]
         accuracy = 100. * test_loss[1] / test_loss[2]
         print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
             avg_loss, int(test_loss[1]), int(test_loss[2]), accuracy))
 
 def print_epoch(epoch, time, rank):
-  if is_master_rank(rank):
+  if is_master(rank):
       print(f"Epoch {epoch} took {time}sec")
 
 def synchronize_gpus_():
@@ -137,7 +143,7 @@ def print_cuda_elapsed_time(time):
   print(f"CUDA event elapsed time: {time}sec")
 
 def print_summary(time, model, rank):
-  if is_master_rank(rank):
+  if is_master(rank):
     print_cuda_elapsed_time(time)
     print(f"{model}")
 
@@ -250,7 +256,7 @@ def make_mixed_precision(p):
 def make_wrap_policy(params):
   return partial(size_based_auto_wrap_policy, min_num_params=params)
    
-def is_master_rank(rank):
+def is_master(rank):
     return rank == 0
 
 def transform_loader(loader, *funs):
@@ -259,7 +265,7 @@ def transform_loader(loader, *funs):
 def make_pbar(loader, rank, *funs):
     total = len(loader)
     loader = transform_loader(loader, *funs)
-    if is_master_rank(rank):
+    if is_master(rank):
         return tqdm(loader, total=total, unit_scale=True)
     else:
         return loader
@@ -267,8 +273,8 @@ def make_pbar(loader, rank, *funs):
 def make_loader_config(**kwargs):
    return pmap(kwargs)
 
-def make_loader(loader, **config):
-    return torch.utils.data.DataLoader(loader, **config)
+def make_loader(data, **config):
+    return torch.utils.data.DataLoader(data, **config)
 
 def is_shallow_net(model):
   return isinstance(module(model), Net)
@@ -330,8 +336,11 @@ def barrier_distributed_():
   dist.barrier()
 
 def save_model_(model, rank):
-  if is_master_rank(rank):
+  if is_master(rank):
     torch.save(model.state_dict(), "mnist_cnn.pt")
+
+def make_scheduler(optimizer, step_size, gamma):
+  return StepLR(optimizer, step_size=step_size, gamma=gamma)
 
 def step_(o):
   o.step()
@@ -404,7 +413,7 @@ def fsdp_main(rank, world_size, args):
     model = fsdp(model, auto_wrap_policy=make_wrap_policy(100))
     optimizer = make_optimizer(model, args.lr)
 
-    scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
+    scheduler = make_scheduler(optimizer, step_size=1, gamma=args.gamma)
     record_cuda_event_(start_event)
     for epoch in range(args.epochs):
         t0 = time.time()

@@ -1,27 +1,139 @@
+import os
 import pickle
-import numpy as np
-from sklearn.metrics.cluster import adjusted_rand_score
 import random
 import time
-import torch
-from torch.autograd import Variable
-import torch.nn.utils.prune as prune
-from torch.utils.data import DataLoader, TensorDataset
+from functools import reduce
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.nn.utils.prune as prune
+import torch.optim as optim
+from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
+from torch.autograd import Variable
+from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
+                                    StateDictType)
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    BackwardPrefetch, CPUOffload)
+from torch.distributed.fsdp.wrap import (enable_wrap,
+                                         size_based_auto_wrap_policy, wrap)
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
+from torchvision import datasets, transforms
+from tqdm import tqdm, trange
+import wandb
+
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
-from tqdm import trange, tqdm
+from .utils.dataloader import loader_sampler, is_dist_sampler
 
-def set_seed(seed):
-    print(f'setting seed: {seed}')
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
+def set_gpu_(rank):
+    torch.cuda.set_device(rank)
+
+def free_gpu_():
+    torch.cuda.empty_cache()
+
+def is_gpu_available():
+    return torch.cuda.is_available()
+
+def gpu_name(rank):
+    return torch.cuda.get_device_name(rank)
+
+def current_gpu():
+    return torch.cuda.current_device()
+
+def is_master(rank):
+    return rank == 0
+
+def transform_loader(loader, *funs):
+    return reduce(lambda acc, f: f(acc), funs, loader)
+
+def make_pbar(loader, rank, *funs):
+    total = len(loader)
+    loader = transform_loader(loader, *funs)
+    if is_master(rank):
+        return tqdm(loader, total=total, unit_scale=True)
+    else:
+        return loader
+
+def count_batches(loader):
+    return len(loader)
+
+def is_tensor(obj):
+    return isinstance(obj, torch.Tensor)
+
+def map_convert(dtype, t):
+    if is_tensor(t):
+        return t.to(dtype)
+    else:
+        raise ValueError("error: input type not supported")
+    
+def to_device(t, device): 
+    if is_tensor(t):
+        return t.to(device)
+    else:
+        raise ValueError("error: input type not supported")
+    
+def is_sum(op):
+  return op == 'sum'
+
+def is_product(op):
+  return op == 'product'
+
+def is_min(op):
+  return op == 'min'
+
+def is_max(op):
+  return op == 'max'
+
+def make_reduce_op(op):
+  if is_sum(op):
+    return dist.ReduceOp.SUM
+  elif is_product(op):
+    return dist.ReduceOp.PRODUCT
+  elif is_min(op):
+    return dist.ReduceOp.MIN
+  elif is_max(op):
+    return dist.ReduceOp.MAX
+  else:
+    raise ValueError(f"Unknown reduce op: {op}")
+  
+def set_epoch_(sampler, epoch):
+    sampler.set_epoch(epoch)
+
+def is_parallel(world_size):
+    return world_size > 1
+  
+def print_train_loss(epoch, train_loss, train_recon0, train_recon1, train_loss_joint, train_entropy, train_distance, time, rank):
+    if is_master(rank):
+        print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {:.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
+            epoch, train_loss, train_recon0, train_recon1, train_loss_joint, train_entropy, train_distance, time))
+  
+def all_reduce_(tensor, op='sum'):
+  dist.all_reduce(tensor, op=make_reduce_op(op))
+
+def make_dirs_(name):
+    os.makedirs(name, exist_ok=True)
+
+def is_nparray(x):
+    return isinstance(x, np.ndarray)
+
+def avg_recon_loss(l):
+    if is_nparray(l):
+        return np.mean(l, axis=0)
+    else:
+        raise ValueError("error: input type not supported")
 
 class cpl_mixVAE:
 
@@ -53,9 +165,9 @@ class cpl_mixVAE:
             elif device == 'mps':
                 self.device = torch.device('mps')
             else:
-                self.device = torch.device(torch.cuda.current_device())
-                torch.cuda.set_device(self.device)
-                print('---> ' + torch.cuda.get_device_name(torch.cuda.current_device()))
+                self.device = torch.device(device)
+                set_gpu_(device)
+                print('---> ' + gpu_name(current_gpu()))
 
         if self.aug_file:
             self.aug_model = torch.load(self.aug_file)
@@ -146,8 +258,6 @@ class cpl_mixVAE:
             momentum: a hyperparameter for batch normalization that updates its running statistics.
             mode: the loss function, either 'MSE' or 'ZINB'.
         """
-        seed = 546
-        set_seed(seed)
         self.lowD_dim = lowD_dim
         self.n_categories = n_categories
         self.state_dim = state_dim
@@ -184,7 +294,7 @@ class cpl_mixVAE:
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
 
-    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0):
+    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
         pcikle used for saving the file
@@ -207,6 +317,7 @@ class cpl_mixVAE:
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
         # initialized saving arrays
+
         train_loss = np.zeros(n_epoch)
         validation_loss = np.zeros(n_epoch)
         train_loss_joint = np.zeros(n_epoch)
@@ -362,7 +473,7 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
-                    
+            
             if self.save and n_epoch > 0:
                 trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
@@ -371,14 +482,15 @@ class cpl_mixVAE:
                 prune_indx = []
                 # plot the learning curve of the network
                 fig, ax = plt.subplots()
-                ax.plot(range(n_epoch), train_loss, label='Training')
-                ax.plot(range(n_epoch), validation_loss, label='Validation')
+                ax.plot(range(n_epoch), np.mean(train_recon, axis=0), label='Training')
+                # ax.plot(range(n_epoch), validation_loss, label='Validation')
                 ax.set_xlabel('# epoch', fontsize=16)
                 ax.set_ylabel('loss value', fontsize=16)
                 ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
                 ax.spines['right'].set_visible(False)
                 ax.spines['top'].set_visible(False)
                 ax.legend()
+                self.folder = ''
                 ax.figure.savefig(self.folder + '/model/learning_curve_before_pruning_K_' + str(self.n_categories) + '_' + self.current_time + '.png')
                 plt.close("all")
 
@@ -649,6 +761,7 @@ class cpl_mixVAE:
                     prune.remove(self.model.fc_sigma[arm], 'weight')
                     prune.remove(self.model.fc6[arm], 'weight')
 
+
                 trained_model = self.folder + '/model/cpl_mixVAE_model_after_pruning_' + str(pr+1) + '_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
                 # plot the learning curve of the network
@@ -662,7 +775,7 @@ class cpl_mixVAE:
                 ax.spines['right'].set_visible(False)
                 ax.spines['top'].set_visible(False)
                 ax.legend()
-                ax.figure.savefig(self.folder + '/model/learning_curve_after_pruning_' + str(pr+1) + '_K_' + str(
+                ax.figure.savefig(self.folder + '../model/learning_curve_after_pruning_' + str(pr+1) + '_K_' + str(
                     self.n_categories) + '_' + self.current_time + '.png')
                 plt.close("all")
                 pr += 1
@@ -671,25 +784,11 @@ class cpl_mixVAE:
     
         return trained_model
     
-    def train_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0):
-        """
-        run the training of the cpl-mixVAE with the pre-defined parameters/settings
-        pcikle used for saving the file
+    def train_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
+               c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
+               log=None):
+        assert is_gpu_available(), "error: no GPU available"
 
-        input args
-            train_loader: train dataloader.
-            test_loader: test dataloader.
-            n_epoch: number of training epoch, without pruning.
-            n_epoch_p: number of training epoch, with pruning.
-            c_p: the prior categorical variable, only if ref_prior is True.
-            c_onehot: the one-hot representation of the prior categorical variable, only if ref_prior is True.
-            min_con: minimum value of consensus among pair of arms.
-            max_prun_it: maximum number of pruning iterations.
-            mode: the loss function, either 'MSE' or 'ZINB'.
-
-        return
-            data_file_id: the output dictionary.
-        """
         # define current_time
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
@@ -710,17 +809,16 @@ class cpl_mixVAE:
         fc_sigma = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
         f6_mask = torch.ones((self.lowD_dim, self.state_dim + self.n_categories))
 
-        bias_mask = bias_mask.to(self.device)
-        weight_mask = weight_mask.to(self.device)
-        fc_mu = fc_mu.to(self.device)
-        fc_sigma = fc_sigma.to(self.device)
-        f6_mask = f6_mask.to(self.device)
+        bias_mask = bias_mask.to(rank)
+        weight_mask = weight_mask.to(rank)
+        fc_mu = fc_mu.to(rank)
+        fc_sigma = fc_sigma.to(rank)
+        f6_mask = f6_mask.to(rank)
         batch_size = train_loader.batch_size
 
         if self.init:
-            print("Start training ...")
-            for epoch in trange(n_epoch):
-                train_loss_val = 0
+            for epoch in range(n_epoch):
+                train_loss_val = torch.zeros(2, device=rank)
                 train_jointloss_val = 0
                 train_dqc = 0
                 log_dqc = 0
@@ -731,9 +829,14 @@ class cpl_mixVAE:
                 train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
                 self.model.train()
 
-                for batch_indx, (data, d_idx), in enumerate(train_loader):
-                    data = data.to(self.device)
-                    d_idx = d_idx.to(int)
+                sampler = loader_sampler(train_loader)
+                if is_dist_sampler(sampler):
+                    set_epoch_(sampler, epoch)
+
+                pbar = make_pbar(train_loader, rank, enumerate)
+                for batch_indx, (data, d_idx), in pbar:
+                    data = to_device(data, rank)
+                    d_idx = map_convert(int, d_idx)
                         
                     trans_data = []
                     tt = time.time()
@@ -752,8 +855,8 @@ class cpl_mixVAE:
                             trans_data.append(data)
 
                     if self.ref_prior:
-                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
                     else:
                         c_bin = 0.
                         prior_c = 0.
@@ -764,7 +867,8 @@ class cpl_mixVAE:
                         self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
                     loss.backward()
                     self.optimizer.step()
-                    train_loss_val += loss.data.item()
+                    train_loss_val[0] += loss.data.item()
+                    train_loss_val[1] += 1
                     train_jointloss_val += loss_joint
                     train_dqc += d_qc
                     log_dqc += dist_c
@@ -773,61 +877,66 @@ class cpl_mixVAE:
 
                     for arm in range(self.n_arm):
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
-
-                train_loss[epoch] = train_loss_val / (batch_indx + 1)
-                train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
-                train_distance[epoch] = train_dqc / (batch_indx + 1)
-                train_entropy[epoch] = entr / (batch_indx + 1)
-                train_log_distance[epoch] = log_dqc / (batch_indx + 1)
-                train_minVar[epoch] = var_min / (batch_indx + 1)
+                
+                if is_parallel(world_size):
+                    all_reduce_(train_loss_val, op='sum')
+                batch_count = count_batches(train_loader)
+                train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
+                train_loss_joint[epoch] = train_jointloss_val / batch_count
+                train_distance[epoch] = train_dqc / batch_count
+                train_entropy[epoch] = entr / batch_count
+                train_log_distance[epoch] = log_dqc / batch_count
+                train_minVar[epoch] = var_min / batch_count
 
                 for arm in range(self.n_arm):
-                    train_recon[arm, epoch] = train_loss_rec[arm] / (batch_indx + 1)
+                    train_recon[arm, epoch] = train_loss_rec[arm] / batch_count
                     for cc in range(self.n_categories):
-                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / (batch_indx + 1)
+                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
 
-                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '
-                      'Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
-                    epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
-                    train_entropy[epoch], train_distance[epoch], time.time() - t0))
+                log({'train_recon': train_recon[0, epoch]})
+                print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
+                                 train_recon[1, epoch], train_loss_joint[epoch], 
+                                 train_entropy[epoch], 
+                                 train_log_distance[epoch], time.time() - t0, rank)
 
                 # validation
                 self.model.eval()
                 with torch.no_grad():
                     val_loss_rec = 0.
-                    val_loss = 0.
+                    val_loss = torch.zeros(1, device=rank)
                     if test_loader.batch_size > 1:
-                        for batch_indx, (data_val, d_idx), in enumerate(test_loader):
-                            data_val = data_val.to(self.device)
-                            d_idx = d_idx.to(int)
+                        pbar = make_pbar(test_loader, rank, enumerate)
+                        for batch_indx, (data_val, d_idx), in pbar:
+                            data_val = to_device(data_val, rank)
+                            d_idx = map_convert(int, d_idx)
                             trans_val_data = []
                             for arm in range(self.n_arm):
                                trans_val_data.append(data_val)
 
                             if self.ref_prior:
-                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
                             else:
                                 c_bin = 0.
                                 prior_c = 0.
 
                             recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c, eval=True)
                             loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data, mu, log_var, qc, c, c_bin)
-                            val_loss += loss.data.item()
+                            val_loss[0] += loss.data.item()
                             for arm in range(self.n_arm):
                                 val_loss_rec += loss_rec[arm].data.item() / self.input_dim
                     else:
                         batch_indx = 0
                         data_val, d_idx = test_loader.dataset.tensors
-                        data_val = data_val.to(self.device)
-                        d_idx = d_idx.to(int)
+                        data_val = to_device(data_val, rank)
+                        d_idx = map_convert(int, d_idx)
                         trans_val_data = []
                         for arm in range(self.n_arm):
                             trans_val_data.append(data_val)
 
                         if self.ref_prior:
-                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
                         else:
                             c_bin = 0.
                             prior_c = 0.
@@ -844,22 +953,34 @@ class cpl_mixVAE:
 
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
-                print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
+                if is_master(rank):
+                    print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
 
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
-                    
-            if self.save and n_epoch > 0:
-                trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
+            
+
+            fig, ax = plt.subplots()
+            x = range(n_epoch)
+            y = avg_recon_loss(train_recon)
+            ax.plot(x, y, label='Average reconstruction Loss')
+            for e, l in zip(x, y):
+                log({'Avg reconstruction loss': l, 'epoch': e})
+            if self.save:
+                assert n_epoch > 0, "error: n_epoch must be greater than 0"
+                trained_model = self.folder + './model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
+                print(f"trained_model: {trained_model}")
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
                 bias = self.model.fcc[0].bias.detach().cpu().numpy()
                 mask = range(len(bias))
                 prune_indx = []
                 # plot the learning curve of the network
                 fig, ax = plt.subplots()
-                ax.plot(range(n_epoch), train_loss, label='Training')
-                ax.plot(range(n_epoch), validation_loss, label='Validation')
+                # ax.plot(range(n_epoch), train_loss, label='Training')
+                print(f"avg_recon_loss(train_recon): {avg_recon_loss(train_recon)}")
+                ax.plot(range(n_epoch), avg_recon_loss(train_recon), label='Training')
+                # ax.plot(range(n_epoch), validation_loss, label='Validation')
                 ax.set_xlabel('# epoch', fontsize=16)
                 ax.set_ylabel('loss value', fontsize=16)
                 ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
@@ -880,6 +1001,10 @@ class cpl_mixVAE:
 
         pr = self.n_pr
         ind = []
+        if is_master(rank):
+            print("warning: disabled pruning")
+        stop_prune = True
+        n_epoch_p = 0
         while not stop_prune:
             predicted_label = np.zeros((self.n_arm, len(train_loader.dataset)))
 
@@ -965,9 +1090,6 @@ class cpl_mixVAE:
             else:
                 print('No more pruning!')
                 stop_prune = True
-
-            print("warning: disabled pruning")
-            stop_prune = True
             if not stop_prune:
                 print("Continue training with pruning ...")
                 print(f"Pruned categories: {ind}")
@@ -1153,10 +1275,8 @@ class cpl_mixVAE:
                     self.n_categories) + '_' + self.current_time + '.png')
                 plt.close("all")
                 pr += 1
-        
-        print('Training is done!')
     
-        return trained_model
+        return ''
 
 
     def eval_model(self, data_loader, c_p=0, c_onehot=0):
@@ -1373,3 +1493,4 @@ class cpl_mixVAE:
         return data
 
 
+# 50 epochs
