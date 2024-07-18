@@ -17,7 +17,7 @@ def train_udagan(data, parameters, device):
     parameters['n_features'] = dataloader.dataset.tensors[0].size(-1)
     netA = Augmenter(noise_dim=parameters['num_n'],
                          latent_dim=parameters['num_z'],
-                         n_zim=parameters['n_zim'],
+                        #  n_zim=parameters['n_zim'],
                          input_dim=parameters['n_features']).to(device)
     netD = Discriminator(input_dim=parameters['n_features']).to(device)
 

@@ -50,7 +50,7 @@ class cpl_mixVAE:
             self.aug_param = self.aug_model['parameters']
             self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
-                                n_zim=self.aug_param['n_zim'],
+                                # n_zim=self.aug_param['n_zim'],
                                 input_dim=self.aug_param['n_features'])
             # Load the trained augmenter weights
             self.netA.load_state_dict(self.aug_model['netA'])
