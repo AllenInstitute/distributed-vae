@@ -37,6 +37,8 @@ from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import loader_sampler, is_dist_sampler
 
+def prn(*args, **kwargs):
+    print(*args, **kwargs)
 
 def set_gpu_(rank):
     torch.cuda.set_device(rank)
@@ -119,6 +121,10 @@ def print_train_loss(epoch, train_loss, train_recon0, train_recon1, train_loss_j
     if is_master(rank):
         print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {:.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
             epoch, train_loss, train_recon0, train_recon1, train_loss_joint, train_entropy, train_distance, time))
+        
+def print_val_loss(val_loss, val_loss_rec, rank):
+    if is_master(rank):
+        print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(val_loss, val_loss_rec))
   
 def all_reduce_(tensor, op='sum'):
   dist.all_reduce(tensor, op=make_reduce_op(op))
@@ -134,6 +140,11 @@ def avg_recon_loss(l):
         return np.mean(l, axis=0)
     else:
         raise ValueError("error: input type not supported")
+
+def disable_augmentation_(model, rank):
+    model.aug_file = False
+    if is_master(rank):
+        print("warning: augmentation disabled")
 
 class cpl_mixVAE:
 
@@ -174,7 +185,7 @@ class cpl_mixVAE:
             self.aug_param = self.aug_model['parameters']
             self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
-                                n_zim=self.aug_param['n_zim'],
+                                # n_zim=self.aug_param['n_zim'],
                                 input_dim=self.aug_param['n_features'])
             # Load the trained augmenter weights
             self.netA.load_state_dict(self.aug_model['netA'])
@@ -841,6 +852,7 @@ class cpl_mixVAE:
                     trans_data = []
                     tt = time.time()
                     for arm in range(self.n_arm):
+                        prn(f"self.aug_file: {self.aug_file}")
                         if self.aug_file:
                             noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
                             _, gen_data = self.netA(data, noise, True, self.device)
@@ -953,18 +965,15 @@ class cpl_mixVAE:
 
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
-                if is_master(rank):
-                    print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
 
+                print_val_loss(validation_loss[epoch], validation_rec_loss[epoch], rank)
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
             
-
-            fig, ax = plt.subplots()
-            x = range(n_epoch)
+            
             y = avg_recon_loss(train_recon)
-            ax.plot(x, y, label='Average reconstruction Loss')
+            x = range(len(y))
             for e, l in zip(x, y):
                 log({'Avg reconstruction loss': l, 'epoch': e})
             if self.save:

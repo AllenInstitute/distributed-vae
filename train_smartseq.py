@@ -2,6 +2,7 @@ import argparse
 import builtins
 import datetime
 from functools import partial, reduce
+from operator import mul
 import os
 import random
 import string
@@ -52,12 +53,25 @@ set_call_(PVector, lambda self, x: self[x])
 
 from pyrsistent import pmap, m, pvector, v
 
+def using_a100():
+    return is_a100(current_gpu())
+
+def is_a100(gpu):
+    return 'a100' in lower(gpu)
+
+def lower(x):
+    return x.lower()
+
+def current_gpu():
+    return torch.cuda.get_device_name()
+
 def count_gpus():
   return torch.cuda.device_count()
 
 def count_params(model):
     return sum(p.numel() for p in model.parameters())
 
+# TODO: change this to sizeof
 def model_size(model):
     param_size = 0
     for param in model.parameters():
@@ -112,6 +126,7 @@ def setup_distributed_(rank, world_size):
 def is_imported(m):
   return m in globals()
 
+# these three functions have three separate random APIs, which SUCK!
 def set_random_seed_(seed):
     if is_imported('random'):
         random.seed(seed)
@@ -183,11 +198,15 @@ def make_saving_dir(folder_name, config):
 def make_dirs_(name):
     os.makedirs(name, exist_ok=True)
 
-def make_aug_file(args, config, sub_file):
-    if args.augmentation:
-        return config['paths']['main_dir'] / config[sub_file]['aug_model']
-    else:
-        return ''
+def make_file_config(toml_file, sub_file):
+    return get_paths(toml_file=toml_file, sub_file=sub_file)
+
+def main_dir_file(config):
+    return config['paths']['main_dir']
+
+def make_aug_file(toml_file, sub_file):
+    config = make_file_config(toml_file, sub_file)
+    return main_dir_file(config) / config[sub_file]['aug_model']
     
 def make_trained_model_file(config, sub_file):
     return config['paths']['main_dir'] / config[sub_file]['trained_model']
@@ -208,7 +227,7 @@ def is_parallel(world_size):
     return world_size > 1
 
 def use_fsdp_args(args):
-    return args.fsdp
+    return args.fsdp and is_parallel(count_gpus_args(args))
 
 def use_dist_sampler_args(args):
     return args.use_dist_sampler
@@ -218,6 +237,9 @@ def count_gpus_args(args):
         return count_gpus()
     else:
         return args.gpus
+    
+def use_augmentation_args(args):
+    return args.augmentation
 
 def tag_(x, tag):
     x.tag = tag
@@ -237,6 +259,8 @@ def make_logger(project, config={}):
     wandb.define_metric('epoch')
     wandb.define_metric('avg_rec_loss', step_metric='epoch')
     def log(metrics, **kwargs):
+
+
         run.log(metrics, **kwargs)
     tag_(log, 'wandb')
 
@@ -303,6 +327,11 @@ def next_group_wandb(project, entity=None):
 def next_group_name_wandb(project, entity=None):
     return f"group_{next_group_wandb(project, entity)}"
 
+# TODO
+def del_group_wandb_(group, project, entity=None):
+    api = make_api_wandb()
+    api.runs(make_path_wandb(project, entity)).delete(query=f"group:{group}")
+
 def set_id_args_(args, id):
     args.id = id
 
@@ -311,6 +340,28 @@ def id_args(args):
 
 def random_string(n):
   return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+def arms_args(args):
+    return args.n_arm
+
+def rec(base_pred, base_val, acc_fun, transform):
+    def _rec(x):
+        if base_pred(x):
+            return base_val
+        else:
+            return acc_fun(x, _rec(transform(x)))
+    return _rec
+
+def is_zero(x):
+    return x == 0
+
+def dec(x):
+    return x - 1
+
+fact = rec(is_zero, 1, mul, dec)
+
+def file_to_model(file, device='cpu'):
+    return torch.load(file, map_location=device)
 
 def fsdp_main(rank, world_size, args):
     setup_print_(rank)
@@ -325,7 +376,12 @@ def fsdp_main(rank, world_size, args):
                            use_dist_sampler=use_dist_sampler_args(args), batch_size=batch_size)
     train_loader, test_loader  = loaders
 
-    cplMixVAE = cpl_mixVAE(device=rank, save_flag=False)
+    if use_augmentation_args(args):
+        aug_file = make_aug_file('pyproject.toml', 'smartseq_files')
+    else:
+        aug_file = ''
+
+    cplMixVAE = cpl_mixVAE(device=rank, save_flag=False, aug_file=aug_file)
 
     cplMixVAE.init_model(n_categories=args.n_categories,
                          state_dim=args.state_dim,
@@ -356,7 +412,8 @@ def fsdp_main(rank, world_size, args):
     config = make_config_logger(use_dist_sampler=use_dist_sampler_args(args),
                                 n_epoch=args.n_epoch,
                                 use_fsdp=use_fsdp_args(args),
-                                world_size=world_size)
+                                world_size=world_size,
+                                arms=arms_args(args))
     log, cleanup_log_ = make_logger('mmidas', config=config)
     model_file = cplMixVAE.train_(train_loader=train_loader,
                                     test_loader=test_loader,
@@ -401,7 +458,8 @@ if __name__ == "__main__":
     parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
     parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
     parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
-    parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
+    parser.add_argument("--augmentation", default=False, action='store_true', help="enable VAE-GAN augmentation")
+    # parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
     parser.add_argument("--lr", default=.001, type=float, help="learning rate")
     parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
     parser.add_argument("--s_drop", default=0.2, type=float, help="state probability of dropout")
@@ -500,3 +558,22 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     # sampler: 2083725.3750
     # no sampler: 931459
     # no sampler, no fsdp
+
+
+# data 
+#  1. transcriptomic
+#  2. time series( electrophysiology)
+#  3. morphological (arbor density)
+#  4. rna seq
+
+# variational autoencoder 
+    # my team: an autoencoder whose manifold it learns is a probability distribution
+    # someone at my school: map a long list of a numbers to a shorter list of numbers. 
+
+# data augmentation
+    # my team: a structure preserving transformation
+    # someone else: a way to manipulate a piece of data without losing any information
+    # friends: list of numbers example
+
+    # program search for data augmentation
+    # intermediate plots between three clusters and one clustser

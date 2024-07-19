@@ -34,6 +34,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
+from torch._dynamo import OptimizedModule
+
+def amoritize_import_(m):
+   ...
+
+def cpu_count():
+   return torch.get_num_threads()
 
 def is_imported(m):
   return m in globals()
@@ -79,7 +86,7 @@ def make_timeout(s):
 
 def setup_process_group_(rank, world_size):
    dist.init_process_group('nccl', rank=rank, world_size=world_size, 
-                           timeout=make_timeout(60))
+                           timeout=make_timeout(120))
   
 def cleanup_process_group_():
     dist.destroy_process_group()
@@ -122,6 +129,7 @@ def print_train_loss(train_loss, epoch, rank):
    if is_master(rank):
       print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, train_loss[0] / train_loss[1]))
 
+
 def print_test_loss(test_loss, rank):
     if is_master(rank):
         avg_loss = test_loss[0] / test_loss[2]
@@ -152,6 +160,9 @@ def make_cuda_event():
 
 def fsdp(*args, **kwargs):
   return FSDP(*args, **kwargs)
+
+def ddp(*args, **kwargs):
+  return DDP(*args, **kwargs)
 
 class Net(nn.Module):
   def __init__(self):
@@ -242,8 +253,25 @@ def string_to_dtype(s):
     return torch.bfloat16
   elif s == 'fp32':
     return torch.float32
+  elif s == 'none':
+    return None
   else:
     raise ValueError(f"Unknown dtype: {s}")
+  
+def string_to_sharding_strategy(s):
+   if s == 'full':
+     return ShardingStrategy.FULL_SHARD
+   elif s == 'grad-op':
+      return ShardingStrategy.SHARD_GRAD_OP
+   elif s == 'no':
+      return ShardingStrategy.NO_SHARD
+   elif s == 'hybrid':
+      return ShardingStrategy.HYBRID_SHARD
+   elif s == 'hybrid-zero2':
+      return ShardingStrategy._HYBRID_SHARD_ZERO2
+   else:
+      raise ValueError(f"Unknown sharding strategy: {s}")
+   
 
 def make_mixed_precision(p):
   dtype = string_to_dtype(p)
@@ -282,6 +310,8 @@ def is_shallow_net(model):
 def module(model):
   if is_parallelized(model):
     return module(model.module)
+  elif is_compiled(model):
+     return module(model._orig_mod)
   else:
     return model
 
@@ -296,6 +326,9 @@ def is_ddp(model):
 
 def is_parallelized(model):
     return is_fsdp(model) or is_ddp(model)
+
+def is_compiled(model):
+   return isinstance(model, OptimizedModule)
 
 def is_mnist_net(model):
   return is_shallow_net(module(model)) or is_deep_net(module(model))
@@ -335,6 +368,15 @@ def record_cuda_event_(event):
 def barrier_distributed_():
   dist.barrier()
 
+def lower(s):
+  return s.lower()
+
+def is_a100(name):
+   return 'a100' in lower(name)
+
+def current_gpu_is_a100():
+  return is_a100(torch.cuda.get_device_name())
+
 def save_model_(model, rank):
   if is_master(rank):
     torch.save(model.state_dict(), "mnist_cnn.pt")
@@ -344,6 +386,12 @@ def make_scheduler(optimizer, step_size, gamma):
 
 def step_(o):
   o.step()
+
+def get_mixed_args(args):
+  return args.mixed
+
+def use_compile(args):
+  return args.compile
 
 def train_(model, rank, train_loader, optimizer, epoch, sampler=None):
     set_mode_(model, 'train')
@@ -378,11 +426,22 @@ def test(model, rank, test_loader):
     all_reduce_(ddp_loss, op='sum')
     print_test_loss(ddp_loss, rank)
 
+def get_sharding_strategy(args):
+  return args.sharding
+
+def compile_model(model):
+  return torch.compile(model, mode='max-autotune-no-cudagraphs')
 
 def fsdp_main(rank, world_size, args):
     setup_print_(rank)
     print(f"starting...")
     setup_distributed_(rank, world_size)
+    if is_master(rank):
+        print("warning: changing matmul precision")
+    torch.set_float32_matmul_precision('high')
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
     transform = make_data_transform()
     train_data = make_train_data(transform)
@@ -391,11 +450,12 @@ def fsdp_main(rank, world_size, args):
     train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=True)
     test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
 
-    cuda_kwargs = {'num_workers': 2,
+    cuda_kwargs = {'num_workers': 4,
                     'pin_memory': True,
                     'shuffle': False,
                     'drop_last': True,
                     'persistent_workers': True, # this is important!!!
+                    'prefetch_factor': 2,
                     }
     train_loader_config = make_loader_config(batch_size=args.batch_size, 
                                              sampler=train_sampler, **cuda_kwargs)
@@ -410,7 +470,13 @@ def fsdp_main(rank, world_size, args):
     end_event = make_cuda_event()
 
     model = make_model(args.model, rank)
-    model = fsdp(model, auto_wrap_policy=make_wrap_policy(100))
+    strat = get_sharding_strategy(args)
+    model = fsdp(model, auto_wrap_policy=make_wrap_policy(100), 
+                 use_orig_params=use_compile(args), 
+                 mixed_precision=make_mixed_precision(args.mixed),
+                 sharding_strategy=string_to_sharding_strategy(strat))
+    if use_compile(args):
+       model = compile_model(model)
     optimizer = make_optimizer(model, args.lr)
 
     scheduler = make_scheduler(optimizer, step_size=1, gamma=args.gamma)
@@ -458,7 +524,7 @@ if __name__ == '__main__':
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N',
-                        help='number of epochs to train (default: 14)')
+                        help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=1.0, metavar='LR',
                         help='learning rate (default: 1.0)')
     parser.add_argument('--gamma', type=float, default=0.7, metavar='M',
@@ -471,6 +537,12 @@ if __name__ == '__main__':
                         help='For Saving the current Model')
     parser.add_argument('--model', type=str, default='shallow', metavar='M',
                         help='Model to use: shallow, deep')
+    parser.add_argument('--compile', action='store_true', default=False,
+                        help='Compile the model')
+    parser.add_argument('--mixed', type=str, default='fp32', metavar='M',
+                        help='Mixed precision: fp16, bf16, fp32')
+    parser.add_argument('--sharding', type=str, default='full', metavar='M',
+                        help='Sharding strategy: full, grad-op, no, hybrid, hybrid-zero2')
     args = make_args(parser)
     set_seed_(args.seed)
 
