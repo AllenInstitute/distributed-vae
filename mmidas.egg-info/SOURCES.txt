@@ -1,0 +1,9 @@
+README.md
+setup.py
+mmidas/cpl_mixvae.py
+mmidas/eval_models.py
+mmidas/nn_model.py
+mmidas.egg-info/PKG-INFO
+mmidas.egg-info/SOURCES.txt
+mmidas.egg-info/dependency_links.txt
+mmidas.egg-info/top_level.txt
