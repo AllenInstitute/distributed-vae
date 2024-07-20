@@ -18,17 +18,17 @@ readme = "README.md"
 main_dir = "./"
 
 # -----------------------------------------------------------------------------
-[smartseq_files]
+[mouse_smartseq]
 anndata_file = "Mouse_ALM-VISp_cpm.h5ad"
 htree_file = "tree_Mouse_ALM-VISp_2018.csv"
 ref_gene_file = "genes_SS_ALM-VISp.csv"
-data_path = "data/mouse_smartseq/"
+data_path = "/Users/yeganeh.marghi/Datasets/mouse_smartseq/"
 saving_path = "results/mouse_smartseq/"
-aug_model = ""
+aug_model = "/Users/yeganeh.marghi/Datasets/smartseq_augmenter/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
 trained_model = "run_1_K_120_Sdim_2_aug_True_lr_0.001_n_arm_2_nbatch_5000_nepoch_10000_nepochP_1000"
 
 # -----------------------------------------------------------------------------
-[10x_files]
+[mouse_ctx_10x]
 anndata_file = ""
 htree_file = "tree_Mouse_cortex_2020.csv"
 data_path = "data/mouse_ctx_10x/"
@@ -37,7 +37,7 @@ aug_model = ""
 trained_model = ""
 
 # -----------------------------------------------------------------------------
-[AD_files]
+[SEA-AD]
 anndata_file = ""
 htree_file = "tree_human_MTG_2023.csv"
 data_path = "data/human_AD/"

@@ -57,5 +57,9 @@ def reparam_trick(mu, std, device):
     return
         a sample from Gaussian distribution N(mu, sigma^2*I).
     """
-    eps = Variable(torch.cuda.FloatTensor(std.size(), device=device).normal_())
+    
+    if mu.device.type == "cuda":
+        eps = Variable(torch.cuda.FloatTensor(std.size(), device=device).normal_())
+    else:
+         eps = Variable(torch.FloatTensor(std.size()).normal_())
     return eps.mul(std).add(mu)

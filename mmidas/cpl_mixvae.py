@@ -46,11 +46,10 @@ class cpl_mixVAE:
                 print('---> ' + torch.cuda.get_device_name(torch.cuda.current_device()))
 
         if self.aug_file:
-            self.aug_model = torch.load(self.aug_file)
+            self.aug_model = torch.load(self.aug_file, map_location='cpu')
             self.aug_param = self.aug_model['parameters']
-            self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
+            self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
-                                # n_zim=self.aug_param['n_zim'],
                                 input_dim=self.aug_param['n_features'])
             # Load the trained augmenter weights
             self.netA.load_state_dict(self.aug_model['netA'])
@@ -72,9 +71,9 @@ class cpl_mixVAE:
                 if self.aug_file:
                     noise = torch.randn(train_set_torch.shape[0], self.aug_param['num_n'])
                     if self.gpu:
-                        _, gen_data = self.netA(train_set_torch.cuda(self.device), noise.cuda(self.device), True, self.device)
+                        _, gen_data = self.netA(train_set_torch.cuda(self.device), noise.cuda(self.device), self.device)
                     else:
-                        _, gen_data = self.netA(train_set_torch, noise, True, self.device)
+                        _, gen_data = self.netA(train_set_torch, noise, self.device)
 
                     train_set = torch.cat((train_set, gen_data.cpu().detach()), 0)
 
@@ -239,14 +238,14 @@ class cpl_mixVAE:
                     for arm in range(self.n_arm):
                         if self.aug_file:
                             noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            _, gen_data = self.netA(data, noise, True, self.device)
-                            if self.aug_param['n_zim'] > 1:
-                                data_bin = 0. * data
-                                data_bin[data > self.eps] = 1.
-                                fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                                trans_data.append(fake_data)
-                            else:
-                                trans_data.append(gen_data)
+                            _, gen_data = self.netA(data, noise, self.device)
+                            # if self.aug_param['n_zim'] > 1:
+                            #     data_bin = 0. * data
+                            #     data_bin[data > self.eps] = 1.
+                            #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                            #     trans_data.append(fake_data)
+                            # else:
+                            trans_data.append(gen_data)
                         else:
                             trans_data.append(data)
 
@@ -516,14 +515,14 @@ class cpl_mixVAE:
                         for arm in range(self.n_arm-1):
                             if self.aug_file:
                                 noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
-                                _, gen_data = self.netA(data, noise, True, self.device)
-                                if self.aug_param['n_zim'] > 1:
-                                    data_bin = 0. * data
-                                    data_bin[data > self.eps] = 1.
-                                    fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                                    trans_data.append(fake_data)
-                                else:
-                                    trans_data.append(gen_data)
+                                _, gen_data = self.netA(data, noise, self.device)
+                                # if self.aug_param['n_zim'] > 1:
+                                #     data_bin = 0. * data
+                                #     data_bin[data > self.eps] = 1.
+                                #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                                #     trans_data.append(fake_data)
+                                # else:
+                                trans_data.append(gen_data)
                             else:
                                 trans_data.append(data)
 

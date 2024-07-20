@@ -3,7 +3,6 @@ import scipy.sparse as ss
 from sklearn.preprocessing import normalize
 from scipy import sparse
 
-
 def normalize_cellxgene(x):
     """Normalize based on number of input genes
 
@@ -81,6 +80,3 @@ def split_data_Kfold(class_label, K_fold):
         train_ind[fold] = train_ind[fold][index]
 
     return train_ind, test_ind
-
-
-
