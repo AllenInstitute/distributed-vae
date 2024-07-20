@@ -22,9 +22,9 @@ main_dir = "./"
 anndata_file = "Mouse_ALM-VISp_cpm.h5ad"
 htree_file = "tree_Mouse_ALM-VISp_2018.csv"
 ref_gene_file = "genes_SS_ALM-VISp.csv"
-data_path = "/Users/yeganeh.marghi/Datasets/mouse_smartseq/"
+data_path = "xxx/Datasets/mouse_smartseq/"
 saving_path = "results/mouse_smartseq/"
-aug_model = "/Users/yeganeh.marghi/Datasets/smartseq_augmenter/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
+aug_model = "xxx/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
 trained_model = "run_1_K_120_Sdim_2_aug_True_lr_0.001_n_arm_2_nbatch_5000_nepoch_10000_nepochP_1000"
 
 # -----------------------------------------------------------------------------
