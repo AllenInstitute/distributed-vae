@@ -1,0 +1,14 @@
+__pycache__/
+.lsp/
+.mypy_cache/
+.vscode/
+data/
+lightning_logs/
+mmidas/__pycache__/
+mmidas/augmentations/__pycache__/
+model/
+pl-mnist/
+wandb/
+results/
+.vscode
+smartseq_augmenter/
