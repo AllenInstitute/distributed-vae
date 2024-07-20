@@ -55,8 +55,16 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
 
     # Load configuration paths
     toml_file = 'pyproject.toml'
+<<<<<<< HEAD
     config = get_paths(toml_file=toml_file, sub_file=dataset)
     data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])
+=======
+    sub_file = 'smartseq_files'
+    config = get_paths(toml_file=toml_file, sub_file=sub_file)
+    print(config)
+    data_path = config['paths']['main_dir'] / config['paths']['data_path']
+    data_file = data_path / config[sub_file]['anndata_file']
+>>>>>>> mnist
 
     # Define folder name for saving results
     folder_name = f'run_{n_run}_K_{n_categories}_Sdim_{state_dim}_aug_{augmentation}_lr_{lr}_n_arm_{n_arm}_nbatch_{batch_size}' + \

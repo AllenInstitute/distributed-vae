@@ -1,11 +1,19 @@
 __pycache__/
 .lsp/
+<<<<<<< HEAD
+=======
+.idea
+>>>>>>> mnist
 .mypy_cache/
 .vscode/
 data/
 lightning_logs/
 mmidas/__pycache__/
 mmidas/augmentations/__pycache__/
+<<<<<<< HEAD
+=======
+mmidas/utils/__pycache__/
+>>>>>>> mnist
 model/
 pl-mnist/
 wandb/
