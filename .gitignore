@@ -1,11 +1,13 @@
 __pycache__/
 .lsp/
+.idea
 .mypy_cache/
 .vscode/
 data/
 lightning_logs/
 mmidas/__pycache__/
 mmidas/augmentations/__pycache__/
+mmidas/utils/__pycache__/
 model/
 pl-mnist/
 wandb/

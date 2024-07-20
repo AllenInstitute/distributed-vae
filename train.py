@@ -46,6 +46,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     toml_file = 'pyproject.toml'
     sub_file = 'smartseq_files'
     config = get_paths(toml_file=toml_file, sub_file=sub_file)
+    print(config)
     data_path = config['paths']['main_dir'] / config['paths']['data_path']
     data_file = data_path / config[sub_file]['anndata_file']
 

@@ -44,10 +44,3 @@ data_path = "data/human_AD/"
 saving_path = "results/human_AD/"
 aug_model = ""
 trained_model = ""
-
-
-
-
-
-
-
