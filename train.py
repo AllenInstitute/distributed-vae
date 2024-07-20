@@ -4,6 +4,16 @@ import numpy as np
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
+from pathlib import Path
+
+def is_path(x):
+    return isinstance(x, Path)
+
+def wrap_in_path(x):
+    if is_path(x):
+        return x
+    else:
+        return wrap_in_path(Path(x))
 
 # Setup argument parser for command line arguments
 parser = argparse.ArgumentParser()
@@ -46,7 +56,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     # Load configuration paths
     toml_file = 'pyproject.toml'
     config = get_paths(toml_file=toml_file, sub_file=dataset)
-    data_file = config[dataset]['data_path'] / config[dataset]['anndata_file']
+    data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])
 
     # Define folder name for saving results
     folder_name = f'run_{n_run}_K_{n_categories}_Sdim_{state_dim}_aug_{augmentation}_lr_{lr}_n_arm_{n_arm}_nbatch_{batch_size}' + \
