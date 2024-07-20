@@ -68,6 +68,7 @@ def current_gpu():
 def count_gpus():
   return torch.cuda.device_count()
 
+# TODO: make this a generic function
 def count_params(model):
     return sum(p.numel() for p in model.parameters())
 
@@ -82,6 +83,7 @@ def model_size(model):
     size_mb = (param_size + buffer_size) / 1024 / 1024
     return size_mb
 
+# TODO: change this to sizeof
 def print_model_size(model):
     print(f"size: {model_size(model):.2f} MB")
 
@@ -94,6 +96,7 @@ def print_summary(model, rank):
         print_model_size(model)
         print(f"{model}")
 
+# TODO: add a100 environmental flags
 def set_environ_flags_():
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ['MASTER_ADDR'] = '127.0.0.1'
@@ -138,8 +141,6 @@ def set_numpy_seed_(seed):
 def set_torch_seed_(seed):
     if is_imported('torch'):
         torch.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
 def set_seed_(seed):
     set_random_seed_(seed)
@@ -220,18 +221,28 @@ def make_wrap_policy(params):
 def fsdp(*args, **kwargs):
   return FSDP(*args, **kwargs)
 
-def batch_size_args(args):
+def get_batch_size(args):
     return args.batch_size
 
 def is_parallel(world_size):
     return world_size > 1
 
-def use_fsdp_args(args):
-    return args.fsdp and is_parallel(count_gpus_args(args))
+def is_args(x):
+    return isinstance(x, argparse.Namespace)
 
-def use_dist_sampler_args(args):
-    return args.use_dist_sampler
+def use_fsdp(x):
+    if is_args(x):
+        return x.fsdp and is_parallel(count_gpus_args(x))
+    else:
+        raise ValueError("type x not supported")
 
+def use_dist_sampler(args):
+    if is_args(args):
+        return args.use_dist_sampler
+    else:
+        raise ValueError("type x not supported")
+
+# TODO: can make this generic
 def count_gpus_args(args):
     if args.gpus == -1:
         return count_gpus()
@@ -344,23 +355,7 @@ def random_string(n):
 def arms_args(args):
     return args.n_arm
 
-def rec(base_pred, base_val, acc_fun, transform):
-    def _rec(x):
-        if base_pred(x):
-            return base_val
-        else:
-            return acc_fun(x, _rec(transform(x)))
-    return _rec
-
-def is_zero(x):
-    return x == 0
-
-def dec(x):
-    return x - 1
-
-fact = rec(is_zero, 1, mul, dec)
-
-def file_to_model(file, device='cpu'):
+def load_model(file, device='cpu'):
     return torch.load(file, map_location=device)
 
 def fsdp_main(rank, world_size, args):
@@ -371,9 +366,9 @@ def fsdp_main(rank, world_size, args):
 
     data = make_data('smartseq')
 
-    batch_size = batch_size_args(args)
+    batch_size = get_batch_size(args)
     loaders = make_loaders(data, 'smartseq', rank, world_size, 
-                           use_dist_sampler=use_dist_sampler_args(args), batch_size=batch_size)
+                           use_dist_sampler=use_dist_sampler(args), batch_size=batch_size)
     train_loader, test_loader  = loaders
 
     if use_augmentation_args(args):
@@ -404,14 +399,14 @@ def fsdp_main(rank, world_size, args):
                          n_pr=args.n_pr,
                          mode=args.loss_mode)
     
-    if use_fsdp_args(args):
+    if use_fsdp(args):
         cplMixVAE.model = fsdp(cplMixVAE.model, auto_wrap_policy=make_wrap_policy(20000),
                             use_orig_params=True, device_id=rank)
     
     # TODO: test loss all reduce
-    config = make_config_logger(use_dist_sampler=use_dist_sampler_args(args),
+    config = make_config_logger(use_dist_sampler=use_dist_sampler(args),
                                 n_epoch=args.n_epoch,
-                                use_fsdp=use_fsdp_args(args),
+                                use_fsdp=use_fsdp(args),
                                 world_size=world_size,
                                 arms=arms_args(args))
     log, cleanup_log_ = make_logger('mmidas', config=config)
@@ -431,8 +426,8 @@ def fsdp_main(rank, world_size, args):
     cleanup_log_()
     cleanup_distributed_()
 
-def spawn_processes_(fun, world_size, args):
-    mp.spawn(fun, args=(world_size, args), nprocs=world_size, join=True)
+def spawn_(fun, procs, args):
+    mp.spawn(fun, args=(procs, args), nprocs=procs, join=True)
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
@@ -477,7 +472,7 @@ if __name__ == "__main__":
     args = make_args(parser)
     # main(**vars(args))
     world_size = count_gpus_args(args)
-    spawn_processes_(fsdp_main, world_size, args)
+    spawn_(fsdp_main, world_size, args)
 
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,

@@ -375,7 +375,6 @@ class cpl_mixVAE:
                         if self.aug_file:
                             print(f"augmenting...")
                             noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            print(f"params: {sum(param is not None for param in self.netA.parameters())}")
                             _, gen_data = self.netA(data, noise, self.device)
                             # if self.aug_param['n_zim'] > 1:
                             #     data_bin = 0. * data

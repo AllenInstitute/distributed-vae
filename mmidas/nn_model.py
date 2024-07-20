@@ -1,3 +1,5 @@
+import numbers
+
 import torch
 import torch.nn as nn
 from torch.nn import ModuleList as mdl
@@ -12,25 +14,22 @@ t = torch
 def is_tensor(x):
     return isinstance(x, torch.Tensor)
 
-def is_flat(x):
-    return isinstance(x, float) or isinstance(x, int)
+def is_number(x):
+    return isinstance(x, numbers.Number)
 
 def flatten(x):
-    if is_flat(x):
+    if is_number(x):
         return x
     elif is_tensor(x):
         return x.flatten()
     else:
         raise ValueError('Input must be a tensor')
 
-def take_flat(x, n):
-    return flatten(x)[:n]
-
 def make_list(x, n): 
-    return [x for _ in range(n)]
+    return [x] * n
 
 def bin(x):
-    return t.where(x > 0.1, 1.0, 0.0)
+    return torch.where(x > 0.1, 1.0, 0.0)
 
 def loss_fn(x, x_rec, x_succ, x_disp, s_mean, s_logvar, c_pdf, c_samp, c_prior, A, mode, is_var, beta, eps, C, lam, lam_pc, pri, device):
     loss_indep = make_list(None, A)
