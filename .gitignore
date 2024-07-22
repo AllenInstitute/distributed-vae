@@ -12,3 +12,5 @@ wandb/
 results/
 .vscode
 smartseq_augmenter/
+slurm-log/
+traces/

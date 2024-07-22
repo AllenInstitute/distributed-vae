@@ -36,20 +36,17 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 from torch._dynamo import OptimizedModule
 
+from torch_utils import current_gpu, cpu_count, set_gpu_
+
 def amoritize_import_(m):
    ...
 
-def cpu_count():
-   return torch.get_num_threads()
 
 def is_imported(m):
   return m in globals()
 
 def set_seed_(seed):
    torch.manual_seed(seed)
-
-def set_gpu_(rank):
-    torch.cuda.set_device(rank)
 
 def is_train(mode):
   return mode == 'train'

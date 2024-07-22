@@ -4,6 +4,7 @@ import datetime
 from functools import partial, reduce
 from operator import mul
 import os
+from pathlib import Path
 import random
 import string
 
@@ -41,7 +42,7 @@ import wandb
 
 from mmidas.cpl_mixvae import cpl_mixVAE, is_master
 from mmidas.utils.tools import get_paths
-from mmidas.utils.dataloader import (load_data, get_loaders, input_dim_data,
+from mmidas.utils.dataloader import (load_data, get_loaders, din,
                                      c_onehot_data, c_p_data, make_data, make_loaders)
 
 
@@ -52,6 +53,15 @@ set_call_(PMap, lambda self, x: self[x])
 set_call_(PVector, lambda self, x: self[x])
 
 from pyrsistent import pmap, m, pvector, v
+
+def is_path(x):
+    return isinstance(x, Path)
+
+def wrap_in_path(x):
+    if is_path(x):
+        return x
+    else:
+        return Path(x)
 
 def using_a100():
     return is_a100(current_gpu())
@@ -119,12 +129,8 @@ def setup_distributed_(rank, world_size):
   set_environ_flags_()
   setup_process_group_(rank, world_size)
 
-  def cleanup_distributed_():
-    dist.destroy_process_group()
-  return cleanup_distributed_
-
-# def cleanup_distributed_():
-#   dist.destroy_process_group()
+def cleanup_distributed_():
+  dist.destroy_process_group()
 
 def is_imported(m):
   return m in globals()
@@ -249,7 +255,7 @@ def count_gpus_args(args):
     else:
         return args.gpus
     
-def use_augmentation_args(args):
+def use_augmentation(args):
     return args.augmentation
 
 def tag_(x, tag):
@@ -259,7 +265,7 @@ def set_wandb_flags_():
     wandb.require('service')
     wandb.require('core')
     
-def make_config_logger(**kwargs):
+def make_logger_config(**kwargs):
     return pmap(kwargs)
 
 def make_logger(project, config={}):
@@ -343,16 +349,16 @@ def del_group_wandb_(group, project, entity=None):
     api = make_api_wandb()
     api.runs(make_path_wandb(project, entity)).delete(query=f"group:{group}")
 
-def set_id_args_(args, id):
+def set_get_id_(args, id):
     args.id = id
 
-def id_args(args):
+def get_id(args):
     return args.id
 
 def random_string(n):
   return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
-def arms_args(args):
+def count_arms(args):
     return args.n_arm
 
 def load_model(file, device='cpu'):
@@ -362,25 +368,48 @@ def fsdp_main(rank, world_size, args):
     setup_print_(rank)
     print(f"starting...")
 
-    cleanup_distributed_ = setup_distributed_(rank, world_size)
+    setup_distributed_(rank, world_size)
 
-    data = make_data('smartseq')
-
-    batch_size = get_batch_size(args)
-    loaders = make_loaders(data, 'smartseq', rank, world_size, 
-                           use_dist_sampler=use_dist_sampler(args), batch_size=batch_size)
-    train_loader, test_loader  = loaders
-
-    if use_augmentation_args(args):
-        aug_file = make_aug_file('pyproject.toml', 'smartseq_files')
+    toml_file = 'pyproject.toml'
+    sub_file = 'mouse_smartseq'
+    config = get_paths(toml_file=toml_file, sub_file=sub_file)
+    data_file = (Path(config[sub_file]['data_path']) 
+                 / Path(config[sub_file]['anndata_file']))
+    folder_name = make_folder_name(args.n_run, args.n_categories, args.state_dim, args.augmentation,
+                                   args.lr, args.n_arm, args.batch_size, args.n_epoch, args.n_epoch_p)
+    saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path']
+    saving_folder = saving_folder / folder_name
+    os.makedirs(saving_folder, exist_ok=True)
+    os.makedirs(saving_folder / 'model', exist_ok=True)
+    saving_folder = str(saving_folder)
+    if args.augmentation:
+        aug_file = config['paths']['main_dir'] / config[sub_file]['aug_model']
     else:
         aug_file = ''
 
-    cplMixVAE = cpl_mixVAE(device=rank, save_flag=False, aug_file=aug_file)
+    if args.pretrained_model:
+        trained_model = config['paths']['main_dir'] / config[sub_file]['trained_model']
+    else:
+        trained_model = ''
+
+    data = load_data(datafile=sub_file)
+
+
+    cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
+                           device=rank,
+                           aug_file=aug_file)
+    
+    fold = 0
+    loaders = cplMixVAE.get_dataloader(dataset=data['log1p'],
+                                       label=data['cluster'],
+                                       batch_size=args.batch_size,
+                                       n_aug_smp=0,
+                                       fold=fold)
+    _, train_loader, _, test_loader = loaders
 
     cplMixVAE.init_model(n_categories=args.n_categories,
                          state_dim=args.state_dim,
-                         input_dim=input_dim_data(data),
+                         input_dim=din(data),
                          fc_dim=args.fc_dim,
                          lowD_dim=args.latent_dim,
                          x_drop=args.p_drop,
@@ -404,12 +433,12 @@ def fsdp_main(rank, world_size, args):
                             use_orig_params=True, device_id=rank)
     
     # TODO: test loss all reduce
-    config = make_config_logger(use_dist_sampler=use_dist_sampler(args),
+    lc = make_logger_config(use_dist_sampler=use_dist_sampler(args),
                                 n_epoch=args.n_epoch,
                                 use_fsdp=use_fsdp(args),
                                 world_size=world_size,
-                                arms=arms_args(args))
-    log, cleanup_log_ = make_logger('mmidas', config=config)
+                                arms=count_arms(args))
+    log, cleanup_log_ = make_logger('mmidas', config=lc)
     model_file = cplMixVAE.train_(train_loader=train_loader,
                                     test_loader=test_loader,
                                     n_epoch=args.n_epoch,
@@ -474,65 +503,6 @@ if __name__ == "__main__":
     world_size = count_gpus_args(args)
     spawn_(fsdp_main, world_size, args)
 
-# Main function
-def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
-         p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta):
-
-    # Load configuration paths
-    toml_file = 'pyproject.toml'
-    sub_file = 'smartseq_files'
-    config = get_paths(toml_file=toml_file, sub_file=sub_file)
-    data_path = make_data_dir(config)
-    data_file = make_data_file(sub_file, config)
-
-    # Define folder name for saving results
-    folder_name = make_folder_name(n_run, n_categories, state_dim, augmentation, 
-                                   lr, n_arm, batch_size, n_epoch, n_epoch_p)
-    saving_folder = make_saving_dir(folder_name, config)
-    make_dirs_(saving_folder)
-    make_dirs_(saving_folder / 'model')
-
-    aug_file = make_aug_file(args, config, sub_file) if augmentation else ''
-    trained_model = make_trained_model_file(config, sub_file) if pretrained_model else ''
-    data = load_data(datafile=data_file)
-    trainloader, testloader, _ = get_loaders(dataset=data['log1p'], batch_size=batch_size)
-
-    # Initialize the coupled mixVAE (MMIDAS) model
-    cplMixVAE = cpl_mixVAE(saving_folder=str(saving_folder), device=device,
-                           aug_file=aug_file)
-
-    # Initialize the model with specified parameters
-    cplMixVAE.init_model(n_categories=n_categories,
-                         state_dim=state_dim,
-                         input_dim=data['log1p'].shape[1],
-                         fc_dim=fc_dim,
-                         lowD_dim=latent_dim,
-                         x_drop=p_drop,
-                         s_drop=s_drop,
-                         lr=lr,
-                         n_arm=n_arm,
-                         temp=temp,
-                         hard=hard,
-                         tau=tau,
-                         lam=lam,
-                         lam_pc=lam_pc,
-                         beta=beta,
-                         ref_prior=ref_pc,
-                         variational=variational,
-                         trained_model=trained_model,
-                         n_pr=n_pr,
-                         mode=loss_mode)
-
-    # Train and save the model
-    model_file = cplMixVAE.train_(train_loader=trainloader,
-                                 test_loader=testloader,
-                                 n_epoch=n_epoch,
-                                 n_epoch_p=n_epoch_p,
-                                 c_onehot=data['c_onehot'],
-                                 c_p=data['c_p'],
-                                 min_con=min_con,
-                                 max_prun_it=max_prun_it)
-
 # max arms
 # smartseq: 
     # no fsdp: 42, 43M params, 164MB
@@ -560,15 +530,3 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
 #  2. time series( electrophysiology)
 #  3. morphological (arbor density)
 #  4. rna seq
-
-# variational autoencoder 
-    # my team: an autoencoder whose manifold it learns is a probability distribution
-    # someone at my school: map a long list of a numbers to a shorter list of numbers. 
-
-# data augmentation
-    # my team: a structure preserving transformation
-    # someone else: a way to manipulate a piece of data without losing any information
-    # friends: list of numbers example
-
-    # program search for data augmentation
-    # intermediate plots between three clusters and one clustser

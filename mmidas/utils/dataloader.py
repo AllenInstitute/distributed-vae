@@ -96,7 +96,7 @@ def _make_data_file(toml_file, sub_file):
 
 def make_data_file(dname):
     if is_smartseq(dname):
-        return _make_data_file('pyproject.toml', 'smartseq_files')
+        return _make_data_file('pyproject.toml', 'mouse_smartseq')
     else:
         raise ValueError(f'Unknown dataset: {dname}')
 
@@ -106,7 +106,8 @@ def is_smartseq(dname):
 def make_data(dname):
     return load_data(make_data_file(dname))
 
-def input_dim_data(data):
+def din(data):
+    # TODO: add predicate "is mmidas data"
     return data['log1p'].shape[1]
 
 def c_onehot_data(data):
