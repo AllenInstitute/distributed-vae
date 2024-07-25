@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
 import torch.nn.utils.prune as prune
 import torch.optim as optim
@@ -25,6 +25,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from torch.distributed.fsdp.wrap import (enable_wrap,
                                          size_based_auto_wrap_policy, wrap)
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
@@ -35,7 +36,7 @@ import wandb
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
-from .utils.dataloader import loader_sampler, is_dist_sampler
+from .utils.dataloader import get_sampler, is_dist_sampler
 
 def prn(*args, **kwargs):
     print(*args, **kwargs)
@@ -146,9 +147,35 @@ def disable_augmentation_(model, rank):
     if is_master(rank):
         print("warning: augmentation disabled")
 
+
+def profile_data_loading(loader, epochs, rank):
+    activities = [
+                    ProfilerActivity.CPU,
+                    ProfilerActivity.CUDA
+                ]
+    prof = profile(activities=activities, record_shapes=True, 
+                   profile_memory=True, with_stack=False)
+    prof.start()
+    with record_function('all_epochs'):
+        for epoch in range(epochs):
+            with record_function('single_epoch'):
+                for batch_idx, (data, d_idx) in enumerate(loader):
+                    with record_function('load_data'):
+                        data.to(rank)
+                        d_idx.to(int)
+    prof.stop()
+    print('profiling results:')
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=-1, top_level_events_only=True))
+    for event in prof.key_averages():
+        if event.key in ['load_data', 'augmentation', 'forward', 
+                            'backward', 'optimize', 'add_losses_in_epoch', 
+                            'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
+            print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
+
 class cpl_mixVAE:
 
-    def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-8, save_flag=True):
+    def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-8, 
+                 save_flag=True, load_weights=True):
         """
         Initialized the cpl_mixVAE class.
 
@@ -183,15 +210,22 @@ class cpl_mixVAE:
         if self.aug_file:
             self.aug_model = torch.load(self.aug_file, map_location='cpu')
             self.aug_param = self.aug_model['parameters']
-            self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
+            
+            if load_weights:
+                self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
                                 input_dim=self.aug_param['n_features'])
-            # Load the trained augmenter weights
-            self.netA.load_state_dict(self.aug_model['netA'])
+                # Load the trained augmenter weights
+                self.netA.load_state_dict(self.aug_model['netA'])
+            else:
+                self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
+                                      latent_dim=self.aug_param['num_z'],
+                                      input_dim=self.aug_param['n_features'])
             self.netA = self.netA.to(self.device)
 
-    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0):
+    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False):
         self.batch_size = batch_size
+
 
         train_inds, test_inds = split_data_Kfold(label, k_fold)
         train_ind = train_inds[fold].astype(int)
@@ -220,7 +254,14 @@ class cpl_mixVAE:
         else:
             train_data = TensorDataset(train_set_torch, train_ind_torch)
 
-        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True)
+        if world_size > 1 and use_dist_sampler:
+            train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
+            train_loader = DataLoader(train_data, batch_size=batch_size, drop_last=True, pin_memory=True, persistent_workers=True, num_workers=2,
+                                  sampler=train_sampler)
+        else:
+            train_loader = DataLoader(train_data, batch_size=batch_size, 
+                                      drop_last=True, pin_memory=True, persistent_workers=True,
+                                      num_workers=2)
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
@@ -230,7 +271,16 @@ class cpl_mixVAE:
         test_set_torch = torch.FloatTensor(dataset[test_ind, :])
         test_ind_torch = torch.FloatTensor(test_ind)
         test_data = TensorDataset(test_set_torch, test_ind_torch)
-        test_loader = DataLoader(test_data, batch_size=1, shuffle=True, drop_last=False, pin_memory=True)
+
+        if world_size > 1 and use_dist_sampler:
+            print('using distributed sampler...')
+            test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=2,
+                                    sampler=test_sampler)
+        else:
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
+                                     pin_memory=True, persistent_workers=True,
+                                     num_workers=2)
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
@@ -373,9 +423,8 @@ class cpl_mixVAE:
                     tt = time.time()
                     for arm in range(self.n_arm):
                         if self.aug_file:
-                            print(f"augmenting...")
                             noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            _, gen_data = self.netA(data, noise, self.device)
+                            _, gen_data = self.netA(data, noise, True, self.device)
                             # if self.aug_param['n_zim'] > 1:
                             #     data_bin = 0. * data
                             #     data_bin[data > self.eps] = 1.
@@ -485,6 +534,8 @@ class cpl_mixVAE:
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
             
+            prn('warning: disabling saving')
+            self.save = False
             if self.save and n_epoch > 0:
                 trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
@@ -516,6 +567,8 @@ class cpl_mixVAE:
 
         pr = self.n_pr
         ind = []
+        stop_prune = True
+        print('warning: stopping pruning')
         while not stop_prune:
             predicted_label = np.zeros((self.n_arm, len(train_loader.dataset)))
 
@@ -643,7 +696,7 @@ class cpl_mixVAE:
                     # training
                     for batch_indx, (data, d_idx), in enumerate(train_loader):
                         # for data in train_loader:
-                        data = Variable(data).to(self.device)
+                        data = data.to(self.device)
                         d_idx = d_idx.to(int)
                         data_bin = 0. * data
                         data_bin[data > 0.] = 1.
@@ -652,10 +705,11 @@ class cpl_mixVAE:
                         trans_data.append(data)
                         tt = time.time()
                         w_param, bias_param, activ_param = 0, 0, 0
+                        # parallelize
                         for arm in range(self.n_arm-1):
                             if self.aug_file:
                                 noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
-                                _, gen_data = self.netA(data, noise, self.device)
+                                _, gen_data = self.netA(data, noise, True, self.device)
                                 # if self.aug_param['n_zim'] > 1:
                                 #     data_bin = 0. * data
                                 #     data_bin[data > self.eps] = 1.
@@ -793,9 +847,9 @@ class cpl_mixVAE:
         
         print('Training is done!')
     
-        return trained_model
-    
-    def train_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
+        # return trained_model
+
+    def benchmark(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
                c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
                log=None):
         assert is_gpu_available(), "error: no GPU available"
@@ -828,6 +882,13 @@ class cpl_mixVAE:
         batch_size = train_loader.batch_size
 
         if self.init:
+            activities = [
+                ProfilerActivity.CPU,
+                ProfilerActivity.CUDA
+            ]
+            prof = profile(activities=activities, record_shapes=True, 
+                           profile_memory=True, with_stack=False)
+            prof.start()
             for epoch in range(n_epoch):
                 train_loss_val = torch.zeros(2, device=rank)
                 train_jointloss_val = 0
@@ -840,31 +901,41 @@ class cpl_mixVAE:
                 train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
                 self.model.train()
 
-                sampler = loader_sampler(train_loader)
+                sampler = get_sampler(train_loader)
                 if is_dist_sampler(sampler):
                     set_epoch_(sampler, epoch)
 
                 pbar = make_pbar(train_loader, rank, enumerate)
                 for batch_indx, (data, d_idx), in pbar:
-                    data = to_device(data, rank)
-                    d_idx = map_convert(int, d_idx)
+                    with record_function("load_data"):
+                        # data = to_device(data, rank)
+                        # d_idx = map_convert(int, d_idx)
+                        data = data.to(rank)
+                        d_idx = d_idx.to(int)
                         
-                    trans_data = []
-                    tt = time.time()
-                    for arm in range(self.n_arm):
-                        prn(f"self.aug_file: {self.aug_file}")
-                        if self.aug_file:
-                            noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            _, gen_data = self.netA(data, noise, True, self.device)
-                            if self.aug_param['n_zim'] > 1:
-                                data_bin = 0. * data
-                                data_bin[data > self.eps] = 1.
-                                fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                                trans_data.append(fake_data)
-                            else:
+                    with record_function('augmentation'):
+                        trans_data = []
+                        tt = time.time()
+                        for arm in range(self.n_arm):
+                            if self.aug_file:
+                                noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
+                                _, gen_data = self.netA(data, noise, True, self.device)
+                                # if self.aug_param['n_zim'] > 1:
+                                #     data_bin = 0. * data
+                                #     data_bin[data > self.eps] = 1.
+                                #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                                #     trans_data.append(fake_data)
+                                # else:
                                 trans_data.append(gen_data)
-                        else:
-                            trans_data.append(data)
+                            else:
+                                trans_data.append(data)
+
+                            if self.ref_prior:
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                            else:
+                                c_bin = 0.
+                                prior_c = 0.
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
@@ -873,43 +944,57 @@ class cpl_mixVAE:
                         c_bin = 0.
                         prior_c = 0.
 
-                    self.optimizer.zero_grad()
-                    recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
-                    loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
-                        self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
-                    loss.backward()
-                    self.optimizer.step()
-                    train_loss_val[0] += loss.data.item()
-                    train_loss_val[1] += 1
-                    train_jointloss_val += loss_joint
-                    train_dqc += d_qc
-                    log_dqc += dist_c
-                    entr += entropy
-                    var_min += min_var_0.data.item()
+                    
+                    with record_function("forward"):
+                        recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
+                        loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
+                            self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
+                        
+                    with record_function('backward'):
+                        self.optimizer.zero_grad()
+                        loss.backward()
+
+                    with record_function("optimize"):
+                        self.optimizer.step()
+
+                    with record_function('add_losses_in_epoch'):
+                        train_loss_val[0] += loss.data.item()
+                        train_loss_val[1] += 1
+                        train_jointloss_val += loss_joint
+                        train_dqc += d_qc
+                        log_dqc += dist_c
+                        entr += entropy
+                        var_min += min_var_0.data.item()
+
+                        for arm in range(self.n_arm):
+                            train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+                
+                with record_function("all_reduce"):
+                    if is_parallel(world_size):
+                        all_reduce_(train_loss_val, op='sum')
+
+                with record_function("add_total_losses"):
+                    batch_count = count_batches(train_loader)
+                    train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
+                    train_loss_joint[epoch] = train_jointloss_val / batch_count
+                    train_distance[epoch] = train_dqc / batch_count
+                    train_entropy[epoch] = entr / batch_count
+                    train_log_distance[epoch] = log_dqc / batch_count
+                    train_minVar[epoch] = var_min / batch_count
 
                     for arm in range(self.n_arm):
-                        train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
-                
-                if is_parallel(world_size):
-                    all_reduce_(train_loss_val, op='sum')
-                batch_count = count_batches(train_loader)
-                train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
-                train_loss_joint[epoch] = train_jointloss_val / batch_count
-                train_distance[epoch] = train_dqc / batch_count
-                train_entropy[epoch] = entr / batch_count
-                train_log_distance[epoch] = log_dqc / batch_count
-                train_minVar[epoch] = var_min / batch_count
+                        train_recon[arm, epoch] = train_loss_rec[arm] / batch_count
+                        for cc in range(self.n_categories):
+                            train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
 
-                for arm in range(self.n_arm):
-                    train_recon[arm, epoch] = train_loss_rec[arm] / batch_count
-                    for cc in range(self.n_categories):
-                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
+                with record_function("log"):
+                    log({'train_recon': train_recon[0, epoch]})
 
-                log({'train_recon': train_recon[0, epoch]})
-                print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
-                                 train_recon[1, epoch], train_loss_joint[epoch], 
-                                 train_entropy[epoch], 
-                                 train_log_distance[epoch], time.time() - t0, rank)
+                with record_function("print_train_loss"):
+                    print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
+                                    train_recon[1, epoch], train_loss_joint[epoch], 
+                                    train_entropy[epoch], 
+                                    train_log_distance[epoch], time.time() - t0, rank)
 
                 # validation
                 self.model.eval()
@@ -971,11 +1056,21 @@ class cpl_mixVAE:
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
             
-            
+            prof.stop()
+            print('profiling results:')
+            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=-1, top_level_events_only=True))
+            for event in prof.key_averages():
+                if event.key in ['load_data', 'augmentation', 'forward', 
+                                 'backward', 'optimize', 'add_losses_in_epoch', 
+                                 'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
+                    print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
+
             y = avg_recon_loss(train_recon)
             x = range(len(y))
             for e, l in zip(x, y):
                 log({'Avg reconstruction loss': l, 'epoch': e})
+            self.save = False
+            prn(f'warning: disabling saving')
             if self.save:
                 assert n_epoch > 0, "error: n_epoch must be greater than 0"
                 trained_model = self.folder + './model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
@@ -1138,7 +1233,7 @@ class cpl_mixVAE:
                     # training
                     for batch_indx, (data, d_idx), in enumerate(train_loader):
                         # for data in train_loader:
-                        data = Variable(data).to(self.device)
+                        data = data.to(self.device)
                         d_idx = d_idx.to(int)
                         data_bin = 0. * data
                         data_bin[data > 0.] = 1.
@@ -1286,6 +1381,1060 @@ class cpl_mixVAE:
                 pr += 1
     
         return ''
+
+    
+    def train_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
+               c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
+               log=None):
+        assert is_gpu_available(), "error: no GPU available"
+
+        # define current_time
+        self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
+
+        # initialized saving arrays
+        train_loss = np.zeros(n_epoch)
+        validation_loss = np.zeros(n_epoch)
+        train_loss_joint = np.zeros(n_epoch)
+        train_entropy = np.zeros(n_epoch)
+        train_distance = np.zeros(n_epoch)
+        train_minVar = np.zeros(n_epoch)
+        train_log_distance = np.zeros(n_epoch)
+        train_recon = np.zeros((self.n_arm, n_epoch))
+        train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch))
+        validation_rec_loss = np.zeros(n_epoch)
+        bias_mask = torch.ones(self.n_categories)
+        weight_mask = torch.ones((self.n_categories, self.lowD_dim))
+        fc_mu = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        fc_sigma = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        f6_mask = torch.ones((self.lowD_dim, self.state_dim + self.n_categories))
+
+        bias_mask = bias_mask.to(rank)
+        weight_mask = weight_mask.to(rank)
+        fc_mu = fc_mu.to(rank)
+        fc_sigma = fc_sigma.to(rank)
+        f6_mask = f6_mask.to(rank)
+        batch_size = train_loader.batch_size
+
+        if self.init:
+            for epoch in range(n_epoch):
+                train_loss_val = torch.zeros(2, device=rank)
+                train_jointloss_val = 0
+                train_dqc = 0
+                log_dqc = 0
+                entr = 0
+                var_min = 0
+                t0 = time.time()
+                train_loss_rec = np.zeros(self.n_arm)
+                train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
+                self.model.train()
+
+                sampler = get_sampler(train_loader)
+                if is_dist_sampler(sampler):
+                    set_epoch_(sampler, epoch)
+
+                pbar = make_pbar(train_loader, rank, enumerate)
+                for batch_indx, (data, d_idx), in pbar:
+                    # data = to_device(data, rank)
+                    # d_idx = map_convert(int, d_idx)
+                    data = data.to(rank)
+                    d_idx = d_idx.to(int)
+                        
+                    trans_data = []
+                    tt = time.time()
+                    for arm in range(self.n_arm):
+                        if self.aug_file:
+                            noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
+                            _, gen_data = self.netA(data, noise, True, rank)
+                            # if self.aug_param['n_zim'] > 1:
+                            #     data_bin = 0. * data
+                            #     data_bin[data > self.eps] = 1.
+                            #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                            #     trans_data.append(fake_data)
+                            # else:
+                            trans_data.append(gen_data)
+                        else:
+                            trans_data.append(data)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                    if self.ref_prior:
+                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                    else:
+                        c_bin = 0.
+                        prior_c = 0.
+
+                    recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
+                    loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
+                        self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
+                        
+                    self.optimizer.zero_grad()
+                    loss.backward()
+
+                    self.optimizer.step()
+
+                    train_loss_val[0] += loss.data.item()
+                    train_loss_val[1] += 1
+                    train_jointloss_val += loss_joint
+                    train_dqc += d_qc
+                    log_dqc += dist_c
+                    entr += entropy
+                    var_min += min_var_0.data.item()
+
+                    for arm in range(self.n_arm):
+                        train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+                
+                if is_parallel(world_size):
+                    all_reduce_(train_loss_val, op='sum')
+
+                batch_count = count_batches(train_loader)
+                train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
+                train_loss_joint[epoch] = train_jointloss_val / batch_count
+                train_distance[epoch] = train_dqc / batch_count
+                train_entropy[epoch] = entr / batch_count
+                train_log_distance[epoch] = log_dqc / batch_count
+                train_minVar[epoch] = var_min / batch_count
+
+                for arm in range(self.n_arm):
+                    train_recon[arm, epoch] = train_loss_rec[arm] / batch_count
+                    for cc in range(self.n_categories):
+                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
+
+                log({'train_recon': train_recon[0, epoch]})
+
+                print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
+                                train_recon[1, epoch], train_loss_joint[epoch], 
+                                train_entropy[epoch], 
+                                train_log_distance[epoch], time.time() - t0, rank)
+
+                # validation
+                self.model.eval()
+                with torch.no_grad():
+                    val_loss_rec = 0.
+                    val_loss = torch.zeros(1, device=rank)
+                    if test_loader.batch_size > 1:
+                        pbar = make_pbar(test_loader, rank, enumerate)
+                        for batch_indx, (data_val, d_idx), in pbar:
+                            data_val = to_device(data_val, rank)
+                            d_idx = map_convert(int, d_idx)
+                            trans_val_data = []
+                            for arm in range(self.n_arm):
+                               trans_val_data.append(data_val)
+
+                            if self.ref_prior:
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                            else:
+                                c_bin = 0.
+                                prior_c = 0.
+
+                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c, eval=True)
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data, mu, log_var, qc, c, c_bin)
+                            val_loss[0] += loss.data.item()
+                            for arm in range(self.n_arm):
+                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                    else:
+                        batch_indx = 0
+                        data_val, d_idx = test_loader.dataset.tensors
+                        data_val = to_device(data_val, rank)
+                        d_idx = map_convert(int, d_idx)
+                        trans_val_data = []
+                        for arm in range(self.n_arm):
+                            trans_val_data.append(data_val)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                        recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data,
+                                                                                            temp=self.temp,
+                                                                                            prior_c=prior_c, eval=True)
+                        loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x,
+                                                                                       trans_val_data, mu, log_var, qc,
+                                                                                       c, c_bin)
+                        val_loss = loss.data.item()
+                        for arm in range(self.n_arm):
+                            val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+
+                validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                validation_loss[epoch] = val_loss / (batch_indx + 1)
+
+                print_val_loss(validation_loss[epoch], validation_rec_loss[epoch], rank)
+                if self.save and (epoch > 0) and (epoch % 1000 == 0):
+                    trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
+                    torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
+            y = avg_recon_loss(train_recon)
+            x = range(len(y))
+            for e, l in zip(x, y):
+                log({'Avg reconstruction loss': l, 'epoch': e})
+            self.save = False
+            prn(f'warning: disabling saving')
+            if self.save:
+                assert n_epoch > 0, "error: n_epoch must be greater than 0"
+                trained_model = self.folder + './model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
+                print(f"trained_model: {trained_model}")
+                torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                bias = self.model.fcc[0].bias.detach().cpu().numpy()
+                mask = range(len(bias))
+                prune_indx = []
+                # plot the learning curve of the network
+                fig, ax = plt.subplots()
+                # ax.plot(range(n_epoch), train_loss, label='Training')
+                print(f"avg_recon_loss(train_recon): {avg_recon_loss(train_recon)}")
+                ax.plot(range(n_epoch), avg_recon_loss(train_recon), label='Training')
+                # ax.plot(range(n_epoch), validation_loss, label='Validation')
+                ax.set_xlabel('# epoch', fontsize=16)
+                ax.set_ylabel('loss value', fontsize=16)
+                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.legend()
+                ax.figure.savefig(self.folder + '/model/learning_curve_before_pruning_K_' + str(self.n_categories) + '_' + self.current_time + '.png')
+                plt.close("all")
+
+        if n_epoch_p > 0:
+            # initialized pruning parameters of the layer of the discrete variable
+            bias = self.model.fcc[0].bias.detach().cpu().numpy()
+            pruning_mask = np.where(bias != 0.)[0]
+            prune_indx = np.where(bias == 0.)[0]
+            stop_prune = False
+        else:
+            stop_prune = True
+
+        pr = self.n_pr
+        ind = []
+        if is_master(rank):
+            print("warning: disabled pruning")
+        stop_prune = True
+        n_epoch_p = 0
+        while not stop_prune:
+            predicted_label = np.zeros((self.n_arm, len(train_loader.dataset)))
+
+            # Assessment over all dataset
+            self.model.eval()
+            with torch.no_grad():
+                for i, (data, d_idx) in enumerate(train_loader):
+                    data = data.to(self.device)
+                    d_idx = d_idx.to(int)
+                    trans_data = []
+                    for arm in range(self.n_arm):
+                        trans_data.append(data)
+
+                    if self.ref_prior:
+                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                    else:
+                        c_bin = 0.
+                        prior_c = 0.
+
+                    recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c, mask=pruning_mask, eval=True)
+
+                    for arm in range(self.n_arm):
+                        z_encoder = z_category[arm].cpu().data.view(z_category[arm].size()[0], self.n_categories).detach().numpy()
+                        predicted_label[arm, i * batch_size:min((i + 1) * batch_size, len(train_loader.dataset))] = np.argmax(z_encoder, axis=1)
+
+            c_agreement = []
+            for arm_a in range(self.n_arm):
+                pred_a = predicted_label[arm_a, :]
+                for arm_b in range(arm_a + 1, self.n_arm):
+                    pred_b = predicted_label[arm_b, :]
+                    armA_vs_armB = np.zeros((self.n_categories, self.n_categories))
+
+                    for samp in range(pred_a.shape[0]):
+                        armA_vs_armB[pred_a[samp].astype(int), pred_b[samp].astype(int)] += 1
+
+                    num_samp_arm = []
+                    for ij in range(self.n_categories):
+                        sum_row = armA_vs_armB[ij, :].sum()
+                        sum_column = armA_vs_armB[:, ij].sum()
+                        num_samp_arm.append(max(sum_row, sum_column))
+
+                    armA_vs_armB = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
+                                             where=np.array(num_samp_arm) != 0)
+                    c_agreement.append(np.diag(armA_vs_armB))
+                    ind_sort = np.argsort(c_agreement[-1])
+                    plt.figure()
+                    plt.imshow(armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap='binary')
+                    plt.colorbar()
+                    plt.xlabel('arm_' + str(arm_a), fontsize=20)
+                    plt.xticks(range(self.n_categories), range(self.n_categories))
+                    plt.yticks(range(self.n_categories), range(self.n_categories))
+                    plt.ylabel('arm_' + str(arm_b), fontsize=20)
+                    plt.xticks([])
+                    plt.yticks([])
+                    plt.title('|c|=' + str(self.n_categories), fontsize=20)
+                    plt.savefig(self.folder + '/consensus_' + str(pr) + '_arm_' + str(arm_a) + '_arm_' + str(arm_b) + '.png', dpi=600)
+                    plt.close("all")
+
+            c_agreement = np.mean(c_agreement, axis=0)
+            agreement = c_agreement[pruning_mask]
+            if (np.min(agreement) <= min_con) and pr < max_prun_it:
+                if pr > 0:
+                    ind_min = pruning_mask[np.argmin(agreement)]
+                    ind_min = np.array([ind_min])
+                    ind = np.concatenate((ind, ind_min))
+                else:
+                    ind_min = pruning_mask[np.argmin(agreement)]
+                    if len(prune_indx) > 0:
+                        ind_min = np.array([ind_min])
+                        ind = np.concatenate((prune_indx, ind_min))
+                    else:
+                        ind.append(ind_min)
+                    ind = np.array(ind)
+
+                ind = ind.astype(int)
+                bias_mask[ind] = 0.
+                weight_mask[ind, :] = 0.
+                fc_mu[:, self.lowD_dim + ind] = 0.
+                fc_sigma[:, self.lowD_dim + ind] = 0.
+                f6_mask[:, ind] = 0.
+                stop_prune = False
+            else:
+                print('No more pruning!')
+                stop_prune = True
+            if not stop_prune:
+                print("Continue training with pruning ...")
+                print(f"Pruned categories: {ind}")
+                bias = bias_mask.detach().cpu().numpy()
+                pruning_mask = np.where(bias != 0.)[0]
+                train_loss = np.zeros(n_epoch_p)
+                validation_rec_loss = np.zeros(n_epoch_p)
+                total_val_loss = np.zeros(n_epoch_p)
+                train_loss_joint = np.zeros(n_epoch_p)
+                train_entropy = np.zeros(n_epoch_p)
+                train_distance = np.zeros(n_epoch_p)
+                train_minVar = np.zeros(n_epoch_p)
+                train_log_distance = np.zeros(n_epoch_p)
+                train_recon = np.zeros((self.n_arm, n_epoch_p))
+                train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch_p))
+
+                for arm in range(self.n_arm):
+                    prune.custom_from_mask(self.model.fcc[arm], 'weight', mask=weight_mask)
+                    prune.custom_from_mask(self.model.fcc[arm], 'bias', mask=bias_mask)
+                    prune.custom_from_mask(self.model.fc_mu[arm], 'weight', mask=fc_mu)
+                    prune.custom_from_mask(self.model.fc_sigma[arm], 'weight', mask=fc_sigma)
+                    prune.custom_from_mask(self.model.fc6[arm], 'weight', mask=f6_mask)
+
+                for epoch in trange(n_epoch_p):
+                    # training
+                    train_loss_val = 0
+                    train_jointloss_val = 0
+                    train_dqz = 0
+                    log_dqz = 0
+                    entr = 0
+                    var_min = 0
+                    t0 = time.time()
+                    train_loss_rec = np.zeros(self.n_arm)
+                    train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
+                    ti = np.zeros(len(train_loader))
+                    self.model.train()
+                    # training
+                    for batch_indx, (data, d_idx), in enumerate(train_loader):
+                        # for data in train_loader:
+                        data = data.to(self.device)
+                        d_idx = d_idx.to(int)
+                        data_bin = 0. * data
+                        data_bin[data > 0.] = 1.
+                        trans_data = []
+                        origin_data = []
+                        trans_data.append(data)
+                        tt = time.time()
+                        w_param, bias_param, activ_param = 0, 0, 0
+                        for arm in range(self.n_arm-1):
+                            if self.aug_file:
+                                noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
+                                _, gen_data = self.netA(data, noise, True, self.device)
+                                if self.aug_param['n_zim'] > 1:
+                                    data_bin = 0. * data
+                                    data_bin[data > self.eps] = 1.
+                                    fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                                    trans_data.append(fake_data)
+                                else:
+                                    trans_data.append(gen_data)
+                            else:
+                                trans_data.append(data)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                        self.optimizer.zero_grad()
+                        recon_batch, p_x, r_x, x_low, qz, s, z, mu, log_var, log_qz = self.model(trans_data, self.temp, prior_c, mask=pruning_mask)
+                        loss, loss_rec, loss_joint, entropy, dist_z, d_qz, KLD_cont, min_var_0, _ = self.model.loss(recon_batch, p_x, r_x,
+                                                                                        trans_data, mu, log_var, qz, z, c_bin)
+
+                        loss.backward()
+                        self.optimizer.step()
+                        ti[batch_indx] = time.time() - tt
+                        train_loss_val += loss.data.item()
+                        train_jointloss_val += loss_joint
+                        train_dqz += d_qz
+                        log_dqz += dist_z
+                        entr += entropy
+                        var_min += min_var_0.data.item()
+
+                        for arm in range(self.n_arm):
+                            train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+
+                    train_loss[epoch] = train_loss_val / (batch_indx + 1)
+                    train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
+                    train_distance[epoch] = train_dqz / (batch_indx + 1)
+                    train_entropy[epoch] = entr / (batch_indx + 1)
+                    train_log_distance[epoch] = log_dqz / (batch_indx + 1)
+                    train_minVar[epoch] = var_min / (batch_indx + 1)
+
+                    for arm in range(self.n_arm):
+                        train_recon[arm, epoch] = train_loss_rec[arm] / (batch_indx + 1)
+                        for c in range(self.n_categories):
+                            train_loss_KL[arm, c, epoch] = train_KLD_cont[arm, c] / (batch_indx + 1)
+
+                    print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'
+                          ':.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
+                        epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
+                        train_entropy[epoch], train_distance[epoch], time.time() - t0))
+
+                    # validation
+                    self.model.eval()
+                    with torch.no_grad():
+                        val_loss_rec = 0.
+                        val_loss = 0.
+                        if test_loader.batch_size > 1:
+                            for batch_indx, (data_val, d_idx), in enumerate(test_loader):
+                                d_idx = d_idx.to(int)
+                                data_val = data_val.to(self.device)
+                                    
+                                trans_val_data = []
+                                for arm in range(self.n_arm):
+                                    trans_val_data.append(data_val)
+
+                                if self.ref_prior:
+                                    c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                                    prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                                else:
+                                    c_bin = 0.
+                                    prior_c = 0.
+
+                                recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
+                                                                                        eval=True, mask=pruning_mask)
+                                loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
+                                                                                            mu, log_var, qc, c, c_bin)
+                                val_loss += loss.data.item()
+                                for arm in range(self.n_arm):
+                                    val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                        else:
+                            batch_indx = 0
+                            data_val, d_idx = test_loader.dataset.tensors
+                            data_val = data_val.to(self.device)
+                            d_idx = d_idx.to(int)
+                            trans_val_data = []
+                            for arm in range(self.n_arm):
+                                trans_val_data.append(data_val)
+
+                            if self.ref_prior:
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                            else:
+                                c_bin = 0.
+                                prior_c = 0.
+
+                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
+                                                                                    eval=True, mask=pruning_mask)
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
+                                                                                        mu, log_var, qc, c, c_bin)
+                            val_loss = loss.data.item()
+                            for arm in range(self.n_arm):
+                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                            
+
+                    validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                    total_val_loss[epoch] = val_loss / (batch_indx + 1)
+                    print('====> Validation Total Loss: {:.4}, Rec. Loss: {:.4f}'.format(total_val_loss[epoch], validation_rec_loss[epoch]))
+
+                for arm in range(self.n_arm):
+                    prune.remove(self.model.fcc[arm], 'weight')
+                    prune.remove(self.model.fcc[arm], 'bias')
+                    prune.remove(self.model.fc_mu[arm], 'weight')
+                    prune.remove(self.model.fc_sigma[arm], 'weight')
+                    prune.remove(self.model.fc6[arm], 'weight')
+
+                trained_model = self.folder + '/model/cpl_mixVAE_model_after_pruning_' + str(pr+1) + '_' + self.current_time + '.pth'
+                torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                # plot the learning curve of the network
+                fig, ax = plt.subplots()
+                ax.plot(range(n_epoch_p), train_loss, label='Training')
+                ax.plot(range(n_epoch_p), total_val_loss, label='Validation')
+                ax.set_xlabel('# epoch', fontsize=16)
+                ax.set_ylabel('loss value', fontsize=16)
+                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(
+                    self.state_dim))
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.legend()
+                ax.figure.savefig(self.folder + '/model/learning_curve_after_pruning_' + str(pr+1) + '_K_' + str(
+                    self.n_categories) + '_' + self.current_time + '.png')
+                plt.close("all")
+                pr += 1
+    
+        return ''
+    
+    def train_joint_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
+               c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
+               log=None):
+        assert is_gpu_available(), "error: no GPU available"
+
+        # define current_time
+        self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
+
+        # initialized saving arrays
+        train_loss = np.zeros(n_epoch)
+        validation_loss = np.zeros(n_epoch)
+        train_loss_joint = np.zeros(n_epoch)
+        train_entropy = np.zeros(n_epoch)
+        train_distance = np.zeros(n_epoch)
+        train_minVar = np.zeros(n_epoch)
+        train_log_distance = np.zeros(n_epoch)
+        train_recon = np.zeros((self.n_arm, n_epoch))
+        train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch))
+        validation_rec_loss = np.zeros(n_epoch)
+        bias_mask = torch.ones(self.n_categories)
+        weight_mask = torch.ones((self.n_categories, self.lowD_dim))
+        fc_mu = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        fc_sigma = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        f6_mask = torch.ones((self.lowD_dim, self.state_dim + self.n_categories))
+
+        bias_mask = bias_mask.to(rank)
+        weight_mask = weight_mask.to(rank)
+        fc_mu = fc_mu.to(rank)
+        fc_sigma = fc_sigma.to(rank)
+        f6_mask = f6_mask.to(rank)
+        batch_size = train_loader.batch_size
+
+        netD = Discriminator(input_dim=self.netA.input_dim).to(rank)
+        # TODO: make these functional
+        criterionD = nn.BCELoss()
+        mseDist = nn.MSELoss()
+
+        optimD = optim.Adam([{'params': netD.parameters()}], lr=self.aug_param['learning_rate'])
+        optimA = optim.Adam([{'params': self.netA.parameters()}], lr=self.aug_parm['learning_rate'])
+
+        real_label = 1.
+        fake_label = 0.
+        A_losses = []
+        D_losses = []
+
+        if self.init:
+            for epoch in range(n_epoch):
+                train_loss_val = torch.zeros(2, device=rank)
+                train_jointloss_val = 0
+                train_dqc = 0
+                log_dqc = 0
+                entr = 0
+                var_min = 0
+                t0 = time.time()
+                train_loss_rec = np.zeros(self.n_arm)
+                train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
+                self.model.train()
+
+                # vae gan losses
+                A_loss_e, D_loss_e = 0, 0
+                gen_loss_e, recon_loss_e = 0, 0
+                triplet_loss_e = 0
+                n_adv = 0
+
+                sampler = get_sampler(train_loader)
+                if is_dist_sampler(sampler):
+                    set_epoch_(sampler, epoch)
+
+                pbar = make_pbar(train_loader, rank, enumerate)
+                for batch_indx, (data, d_idx), in pbar:
+                    data = data.to(rank)
+                    data_bin = torch.where(data > self.eps, 1, 0).to(rank)
+                    d_idx = d_idx.to(int)
+                        
+                    optimD.zero_grad()
+                    label = torch.full((batch_size,), real_label, device=rank)
+                    _, probs_real = netD(data_bin)
+                    loss_real = criterionD(probs_real.view(-1), label)
+
+                    if F.relu(loss_real - np.log(2) / 2) > 0:
+                        loss_real.backward()
+                        optim_D = True
+                    else:
+                        optim_D = False
+
+                    label.fill_(fake_label)
+
+                    trans_data = []
+                    tt = time.time()
+                    for arm in range(self.n_arm):
+                        if self.aug_file:
+                            noise = torch.randn(batch_size, self.aug_param['num_n'], device=rank)
+                            _, gen_data = self.netA(data, noise, True, rank)
+                            _, gen_data2 = self.netA(data, noise, False, rank)
+                            # if self.aug_param['n_zim'] > 1:
+                            #     data_bin = 0. * data
+                            #     data_bin[data > self.eps] = 1.
+                            #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                            #     trans_data.append(fake_data)
+                            # else:
+                            trans_data.append(gen_data)
+
+                            gen_data_bin = 0. * gen_data
+                            gen_data2_bin = 0. * gen_data2
+                            gen_data_bin[gen_data > 1e-3] = 1.
+                            gen_data2_bin[gen_data2 > 1e-3] = 1.
+
+                        else:
+                            trans_data.append(data)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                    if self.ref_prior:
+                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                    else:
+                        c_bin = 0.
+                        prior_c = 0.
+
+                    recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
+                    loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
+                        self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
+                        
+                    self.optimizer.zero_grad()
+                    loss.backward()
+
+                    self.optimizer.step()
+
+                    train_loss_val[0] += loss.data.item()
+                    train_loss_val[1] += 1
+                    train_jointloss_val += loss_joint
+                    train_dqc += d_qc
+                    log_dqc += dist_c
+                    entr += entropy
+                    var_min += min_var_0.data.item()
+
+                    for arm in range(self.n_arm):
+                        train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+                
+                if is_parallel(world_size):
+                    all_reduce_(train_loss_val, op='sum')
+
+                batch_count = count_batches(train_loader)
+                train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
+                train_loss_joint[epoch] = train_jointloss_val / batch_count
+                train_distance[epoch] = train_dqc / batch_count
+                train_entropy[epoch] = entr / batch_count
+                train_log_distance[epoch] = log_dqc / batch_count
+                train_minVar[epoch] = var_min / batch_count
+
+                for arm in range(self.n_arm):
+                    train_recon[arm, epoch] = train_loss_rec[arm] / batch_count
+                    for cc in range(self.n_categories):
+                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
+
+                log({'train_recon': train_recon[0, epoch]})
+
+                print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
+                                train_recon[1, epoch], train_loss_joint[epoch], 
+                                train_entropy[epoch], 
+                                train_log_distance[epoch], time.time() - t0, rank)
+
+                # validation
+                self.model.eval()
+                with torch.no_grad():
+                    val_loss_rec = 0.
+                    val_loss = torch.zeros(1, device=rank)
+                    if test_loader.batch_size > 1:
+                        pbar = make_pbar(test_loader, rank, enumerate)
+                        for batch_indx, (data_val, d_idx), in pbar:
+                            data_val = to_device(data_val, rank)
+                            d_idx = map_convert(int, d_idx)
+                            trans_val_data = []
+                            for arm in range(self.n_arm):
+                               trans_val_data.append(data_val)
+
+                            if self.ref_prior:
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                            else:
+                                c_bin = 0.
+                                prior_c = 0.
+
+                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c, eval=True)
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data, mu, log_var, qc, c, c_bin)
+                            val_loss[0] += loss.data.item()
+                            for arm in range(self.n_arm):
+                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                    else:
+                        batch_indx = 0
+                        data_val, d_idx = test_loader.dataset.tensors
+                        data_val = to_device(data_val, rank)
+                        d_idx = map_convert(int, d_idx)
+                        trans_val_data = []
+                        for arm in range(self.n_arm):
+                            trans_val_data.append(data_val)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(rank)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(rank)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                        recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data,
+                                                                                            temp=self.temp,
+                                                                                            prior_c=prior_c, eval=True)
+                        loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x,
+                                                                                       trans_val_data, mu, log_var, qc,
+                                                                                       c, c_bin)
+                        val_loss = loss.data.item()
+                        for arm in range(self.n_arm):
+                            val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+
+                validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                validation_loss[epoch] = val_loss / (batch_indx + 1)
+
+                print_val_loss(validation_loss[epoch], validation_rec_loss[epoch], rank)
+                if self.save and (epoch > 0) and (epoch % 1000 == 0):
+                    trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
+                    torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
+            y = avg_recon_loss(train_recon)
+            x = range(len(y))
+            for e, l in zip(x, y):
+                log({'Avg reconstruction loss': l, 'epoch': e})
+            self.save = False
+            prn(f'warning: disabling saving')
+            if self.save:
+                assert n_epoch > 0, "error: n_epoch must be greater than 0"
+                trained_model = self.folder + './model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
+                print(f"trained_model: {trained_model}")
+                torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                bias = self.model.fcc[0].bias.detach().cpu().numpy()
+                mask = range(len(bias))
+                prune_indx = []
+                # plot the learning curve of the network
+                fig, ax = plt.subplots()
+                # ax.plot(range(n_epoch), train_loss, label='Training')
+                print(f"avg_recon_loss(train_recon): {avg_recon_loss(train_recon)}")
+                ax.plot(range(n_epoch), avg_recon_loss(train_recon), label='Training')
+                # ax.plot(range(n_epoch), validation_loss, label='Validation')
+                ax.set_xlabel('# epoch', fontsize=16)
+                ax.set_ylabel('loss value', fontsize=16)
+                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.legend()
+                ax.figure.savefig(self.folder + '/model/learning_curve_before_pruning_K_' + str(self.n_categories) + '_' + self.current_time + '.png')
+                plt.close("all")
+
+        if n_epoch_p > 0:
+            # initialized pruning parameters of the layer of the discrete variable
+            bias = self.model.fcc[0].bias.detach().cpu().numpy()
+            pruning_mask = np.where(bias != 0.)[0]
+            prune_indx = np.where(bias == 0.)[0]
+            stop_prune = False
+        else:
+            stop_prune = True
+
+        pr = self.n_pr
+        ind = []
+        if is_master(rank):
+            print("warning: disabled pruning")
+        stop_prune = True
+        n_epoch_p = 0
+        while not stop_prune:
+            predicted_label = np.zeros((self.n_arm, len(train_loader.dataset)))
+
+            # Assessment over all dataset
+            self.model.eval()
+            with torch.no_grad():
+                for i, (data, d_idx) in enumerate(train_loader):
+                    data = data.to(self.device)
+                    d_idx = d_idx.to(int)
+                    trans_data = []
+                    for arm in range(self.n_arm):
+                        trans_data.append(data)
+
+                    if self.ref_prior:
+                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                    else:
+                        c_bin = 0.
+                        prior_c = 0.
+
+                    recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c, mask=pruning_mask, eval=True)
+
+                    for arm in range(self.n_arm):
+                        z_encoder = z_category[arm].cpu().data.view(z_category[arm].size()[0], self.n_categories).detach().numpy()
+                        predicted_label[arm, i * batch_size:min((i + 1) * batch_size, len(train_loader.dataset))] = np.argmax(z_encoder, axis=1)
+
+            c_agreement = []
+            for arm_a in range(self.n_arm):
+                pred_a = predicted_label[arm_a, :]
+                for arm_b in range(arm_a + 1, self.n_arm):
+                    pred_b = predicted_label[arm_b, :]
+                    armA_vs_armB = np.zeros((self.n_categories, self.n_categories))
+
+                    for samp in range(pred_a.shape[0]):
+                        armA_vs_armB[pred_a[samp].astype(int), pred_b[samp].astype(int)] += 1
+
+                    num_samp_arm = []
+                    for ij in range(self.n_categories):
+                        sum_row = armA_vs_armB[ij, :].sum()
+                        sum_column = armA_vs_armB[:, ij].sum()
+                        num_samp_arm.append(max(sum_row, sum_column))
+
+                    armA_vs_armB = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
+                                             where=np.array(num_samp_arm) != 0)
+                    c_agreement.append(np.diag(armA_vs_armB))
+                    ind_sort = np.argsort(c_agreement[-1])
+                    plt.figure()
+                    plt.imshow(armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap='binary')
+                    plt.colorbar()
+                    plt.xlabel('arm_' + str(arm_a), fontsize=20)
+                    plt.xticks(range(self.n_categories), range(self.n_categories))
+                    plt.yticks(range(self.n_categories), range(self.n_categories))
+                    plt.ylabel('arm_' + str(arm_b), fontsize=20)
+                    plt.xticks([])
+                    plt.yticks([])
+                    plt.title('|c|=' + str(self.n_categories), fontsize=20)
+                    plt.savefig(self.folder + '/consensus_' + str(pr) + '_arm_' + str(arm_a) + '_arm_' + str(arm_b) + '.png', dpi=600)
+                    plt.close("all")
+
+            c_agreement = np.mean(c_agreement, axis=0)
+            agreement = c_agreement[pruning_mask]
+            if (np.min(agreement) <= min_con) and pr < max_prun_it:
+                if pr > 0:
+                    ind_min = pruning_mask[np.argmin(agreement)]
+                    ind_min = np.array([ind_min])
+                    ind = np.concatenate((ind, ind_min))
+                else:
+                    ind_min = pruning_mask[np.argmin(agreement)]
+                    if len(prune_indx) > 0:
+                        ind_min = np.array([ind_min])
+                        ind = np.concatenate((prune_indx, ind_min))
+                    else:
+                        ind.append(ind_min)
+                    ind = np.array(ind)
+
+                ind = ind.astype(int)
+                bias_mask[ind] = 0.
+                weight_mask[ind, :] = 0.
+                fc_mu[:, self.lowD_dim + ind] = 0.
+                fc_sigma[:, self.lowD_dim + ind] = 0.
+                f6_mask[:, ind] = 0.
+                stop_prune = False
+            else:
+                print('No more pruning!')
+                stop_prune = True
+            if not stop_prune:
+                print("Continue training with pruning ...")
+                print(f"Pruned categories: {ind}")
+                bias = bias_mask.detach().cpu().numpy()
+                pruning_mask = np.where(bias != 0.)[0]
+                train_loss = np.zeros(n_epoch_p)
+                validation_rec_loss = np.zeros(n_epoch_p)
+                total_val_loss = np.zeros(n_epoch_p)
+                train_loss_joint = np.zeros(n_epoch_p)
+                train_entropy = np.zeros(n_epoch_p)
+                train_distance = np.zeros(n_epoch_p)
+                train_minVar = np.zeros(n_epoch_p)
+                train_log_distance = np.zeros(n_epoch_p)
+                train_recon = np.zeros((self.n_arm, n_epoch_p))
+                train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch_p))
+
+                for arm in range(self.n_arm):
+                    prune.custom_from_mask(self.model.fcc[arm], 'weight', mask=weight_mask)
+                    prune.custom_from_mask(self.model.fcc[arm], 'bias', mask=bias_mask)
+                    prune.custom_from_mask(self.model.fc_mu[arm], 'weight', mask=fc_mu)
+                    prune.custom_from_mask(self.model.fc_sigma[arm], 'weight', mask=fc_sigma)
+                    prune.custom_from_mask(self.model.fc6[arm], 'weight', mask=f6_mask)
+
+                for epoch in trange(n_epoch_p):
+                    # training
+                    train_loss_val = 0
+                    train_jointloss_val = 0
+                    train_dqz = 0
+                    log_dqz = 0
+                    entr = 0
+                    var_min = 0
+                    t0 = time.time()
+                    train_loss_rec = np.zeros(self.n_arm)
+                    train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
+                    ti = np.zeros(len(train_loader))
+                    self.model.train()
+                    # training
+                    for batch_indx, (data, d_idx), in enumerate(train_loader):
+                        # for data in train_loader:
+                        data = data.to(self.device)
+                        d_idx = d_idx.to(int)
+                        data_bin = 0. * data
+                        data_bin[data > 0.] = 1.
+                        trans_data = []
+                        origin_data = []
+                        trans_data.append(data)
+                        tt = time.time()
+                        w_param, bias_param, activ_param = 0, 0, 0
+                        for arm in range(self.n_arm-1):
+                            if self.aug_file:
+                                noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
+                                _, gen_data = self.netA(data, noise, True, self.device)
+                                if self.aug_param['n_zim'] > 1:
+                                    data_bin = 0. * data
+                                    data_bin[data > self.eps] = 1.
+                                    fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
+                                    trans_data.append(fake_data)
+                                else:
+                                    trans_data.append(gen_data)
+                            else:
+                                trans_data.append(data)
+
+                        if self.ref_prior:
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
+
+                        self.optimizer.zero_grad()
+                        recon_batch, p_x, r_x, x_low, qz, s, z, mu, log_var, log_qz = self.model(trans_data, self.temp, prior_c, mask=pruning_mask)
+                        loss, loss_rec, loss_joint, entropy, dist_z, d_qz, KLD_cont, min_var_0, _ = self.model.loss(recon_batch, p_x, r_x,
+                                                                                        trans_data, mu, log_var, qz, z, c_bin)
+
+                        loss.backward()
+                        self.optimizer.step()
+                        ti[batch_indx] = time.time() - tt
+                        train_loss_val += loss.data.item()
+                        train_jointloss_val += loss_joint
+                        train_dqz += d_qz
+                        log_dqz += dist_z
+                        entr += entropy
+                        var_min += min_var_0.data.item()
+
+                        for arm in range(self.n_arm):
+                            train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+
+                    train_loss[epoch] = train_loss_val / (batch_indx + 1)
+                    train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
+                    train_distance[epoch] = train_dqz / (batch_indx + 1)
+                    train_entropy[epoch] = entr / (batch_indx + 1)
+                    train_log_distance[epoch] = log_dqz / (batch_indx + 1)
+                    train_minVar[epoch] = var_min / (batch_indx + 1)
+
+                    for arm in range(self.n_arm):
+                        train_recon[arm, epoch] = train_loss_rec[arm] / (batch_indx + 1)
+                        for c in range(self.n_categories):
+                            train_loss_KL[arm, c, epoch] = train_KLD_cont[arm, c] / (batch_indx + 1)
+
+                    print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'
+                          ':.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
+                        epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
+                        train_entropy[epoch], train_distance[epoch], time.time() - t0))
+
+                    # validation
+                    self.model.eval()
+                    with torch.no_grad():
+                        val_loss_rec = 0.
+                        val_loss = 0.
+                        if test_loader.batch_size > 1:
+                            for batch_indx, (data_val, d_idx), in enumerate(test_loader):
+                                d_idx = d_idx.to(int)
+                                data_val = data_val.to(self.device)
+                                    
+                                trans_val_data = []
+                                for arm in range(self.n_arm):
+                                    trans_val_data.append(data_val)
+
+                                if self.ref_prior:
+                                    c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                                    prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                                else:
+                                    c_bin = 0.
+                                    prior_c = 0.
+
+                                recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
+                                                                                        eval=True, mask=pruning_mask)
+                                loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
+                                                                                            mu, log_var, qc, c, c_bin)
+                                val_loss += loss.data.item()
+                                for arm in range(self.n_arm):
+                                    val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                        else:
+                            batch_indx = 0
+                            data_val, d_idx = test_loader.dataset.tensors
+                            data_val = data_val.to(self.device)
+                            d_idx = d_idx.to(int)
+                            trans_val_data = []
+                            for arm in range(self.n_arm):
+                                trans_val_data.append(data_val)
+
+                            if self.ref_prior:
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                            else:
+                                c_bin = 0.
+                                prior_c = 0.
+
+                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
+                                                                                    eval=True, mask=pruning_mask)
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
+                                                                                        mu, log_var, qc, c, c_bin)
+                            val_loss = loss.data.item()
+                            for arm in range(self.n_arm):
+                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                            
+
+                    validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                    total_val_loss[epoch] = val_loss / (batch_indx + 1)
+                    print('====> Validation Total Loss: {:.4}, Rec. Loss: {:.4f}'.format(total_val_loss[epoch], validation_rec_loss[epoch]))
+
+                for arm in range(self.n_arm):
+                    prune.remove(self.model.fcc[arm], 'weight')
+                    prune.remove(self.model.fcc[arm], 'bias')
+                    prune.remove(self.model.fc_mu[arm], 'weight')
+                    prune.remove(self.model.fc_sigma[arm], 'weight')
+                    prune.remove(self.model.fc6[arm], 'weight')
+
+                trained_model = self.folder + '/model/cpl_mixVAE_model_after_pruning_' + str(pr+1) + '_' + self.current_time + '.pth'
+                torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                # plot the learning curve of the network
+                fig, ax = plt.subplots()
+                ax.plot(range(n_epoch_p), train_loss, label='Training')
+                ax.plot(range(n_epoch_p), total_val_loss, label='Validation')
+                ax.set_xlabel('# epoch', fontsize=16)
+                ax.set_ylabel('loss value', fontsize=16)
+                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(
+                    self.state_dim))
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.legend()
+                ax.figure.savefig(self.folder + '/model/learning_curve_after_pruning_' + str(pr+1) + '_K_' + str(
+                    self.n_categories) + '_' + self.current_time + '.png')
+                plt.close("all")
+                pr += 1
+    
+        return ''
+
+
+    
 
 
     def eval_model(self, data_loader, c_p=0, c_onehot=0):

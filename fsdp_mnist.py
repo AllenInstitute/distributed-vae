@@ -435,9 +435,9 @@ def fsdp_main(rank, world_size, args):
     setup_distributed_(rank, world_size)
     if is_master(rank):
         print("warning: changing matmul precision")
-    torch.set_float32_matmul_precision('high')
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
     torch.backends.cudnn.benchmark = True
 
     transform = make_data_transform()

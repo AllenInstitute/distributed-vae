@@ -168,6 +168,8 @@ class Augmenter_smartseq(nn.Module):
         self.fc4 = nn.Linear(n_dim, n_dim)
         self.batch_fc4 = nn.BatchNorm1d(num_features=self.fc4.out_features,
                                         eps=1e-10, momentum=moment, affine=False)
+        # self.fc5_ = nn.Linear(n_dim, n_dim // 5)
+        # self.batch_fc5_ = nn.BatchNorm1d(num_features=self.fc5_.out_features, eps=1e-10, momentum=moment, affine=False)
         self.fc5 = nn.Linear(n_dim + noise_dim, n_dim // 5)
         self.batch_fc5 = nn.BatchNorm1d(num_features=self.fc5.out_features,
                                         eps=1e-10, momentum=moment, affine=False)
@@ -194,7 +196,7 @@ class Augmenter_smartseq(nn.Module):
         self.fc11 = nn.Linear(self.fc10.out_features, input_dim)
 
     
-    def forward(self, x, z, device):
+    def forward(self, x, z, noise, device):
         z = F.elu(self.bnz(self.noise(z)))
         x = F.relu(self.batch_fc1(self.fc1(self.dp(x))))
         x = F.relu(self.batch_fc2(self.fc2(x)))

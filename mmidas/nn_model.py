@@ -103,6 +103,7 @@ def loss_fn(x, x_rec, x_succ, x_disp, s_mean, s_logvar, c_pdf, c_samp, c_prior, 
         's_kl': KLD_cont
     }
 
+
 class mixVAE_model(nn.Module):
     """
     Class for the neural network module for mixture of continuous and
@@ -152,12 +153,6 @@ class mixVAE_model(nn.Module):
             loss_mode: string, define the reconstruction loss function, either MSE or ZINB.
         """
         super(mixVAE_model, self).__init__()
-
-        seed = 546
-        print(f"setting seed: {seed}")
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-
         self.input_dim = input_dim
         self.fc_dim = fc_dim
         self.state_dim = state_dim
@@ -277,6 +272,7 @@ class mixVAE_model(nn.Module):
         qc, alr_qc = [None] * self.n_arm, [None] * self.n_arm
         x_low, log_qc = [None] * self.n_arm, [None] * self.n_arm
 
+        # vectorize?
         for arm in range(self.n_arm):
             x_low[arm], log_qc[arm] = self.encoder(x[arm], arm)
 
@@ -567,7 +563,6 @@ def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
     return l_zinb
 
 def sample_gumbel(shape, eps, device):
-    # U = torch.rand(shape).to(device)
     U = torch.ones(shape).to(device)
     output = -torch.log(-torch.log(U + eps) + eps)
     return output
@@ -581,17 +576,12 @@ def gumbel_softmax(phi, eps, temp, latent_dim, cat_dim, device, hard=False, nois
     if hard:
         shape = y.size()
         _, ind = t.max(y, dim=-1)
-        # y_hard = view(t.zeros_like(y), -1, shape[-1])
         y_hard = t.zeros_like(y).view(-1, shape[-1])
-        # y_hard.scatter_(1, view(ind, -1, 1), 1)
         y_hard.scatter_(1, ind.view(-1, 1), 1)
-        # y_hard = view(y_hard, *shape)
         y_hard = y_hard.view(*shape)
         y_hard = (y_hard - y).detach() + y
-        # return view(y_hard, -1, latent_dim * cat_dim)
         return y_hard.view(-1, latent_dim * cat_dim)
     else:
-        # return view(y, -1, latent_dim * cat_dim)
         return y.view(-1, latent_dim * cat_dim)
 
 zinb = zinb_loss

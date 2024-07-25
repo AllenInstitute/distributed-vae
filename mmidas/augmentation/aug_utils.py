@@ -59,7 +59,8 @@ def reparam_trick(mu, std, device):
     """
     
     if mu.device.type == "cuda":
-        eps = Variable(torch.cuda.FloatTensor(std.size(), device=device).normal_())
+        # eps = torch.cuda.FloatTensor(std.size(), device=device).normal_()
+        eps = torch.FloatTensor(std.size()).normal_().to(device)
     else:
-         eps = Variable(torch.FloatTensor(std.size()).normal_())
+         eps = torch.FloatTensor(std.size()).normal_()
     return eps.mul(std).add(mu)

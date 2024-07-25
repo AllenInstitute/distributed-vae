@@ -137,7 +137,7 @@ def make_train_data(data):
 def make_test_data(data):
     ...
 
-def loader_sampler(loader):
+def get_sampler(loader):
     return loader.sampler
 
 def is_dist_sampler(sampler):

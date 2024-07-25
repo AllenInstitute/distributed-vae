@@ -6,6 +6,7 @@ from operator import mul
 import os
 from pathlib import Path
 import random
+from time import sleep
 import string
 
 import numpy as np
@@ -35,10 +36,10 @@ from torch.distributed.fsdp.wrap import (enable_wrap,
                                          size_based_auto_wrap_policy, wrap)
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import StepLR
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 import wandb
-
 
 from mmidas.cpl_mixvae import cpl_mixVAE, is_master
 from mmidas.utils.tools import get_paths
@@ -83,7 +84,7 @@ def count_params(model):
     return sum(p.numel() for p in model.parameters())
 
 # TODO: change this to sizeof
-def model_size(model):
+def sizeof(model):
     param_size = 0
     for param in model.parameters():
         param_size += param.nelement() * param.element_size()
@@ -94,8 +95,8 @@ def model_size(model):
     return size_mb
 
 # TODO: change this to sizeof
-def print_model_size(model):
-    print(f"size: {model_size(model):.2f} MB")
+def print_sizeof(model):
+    print(f"size: {sizeof(model):.2f} MB")
 
 def setup_print_(rank):
   builtins.print = partial(print, f"[rank {rank}]")
@@ -103,7 +104,7 @@ def setup_print_(rank):
 def print_summary(model, rank):
     if is_master(rank):
         print(f"params: {count_params(model)}")
-        print_model_size(model)
+        print_sizeof(model)
         print(f"{model}")
 
 # TODO: add a100 environmental flags
@@ -113,14 +114,30 @@ def set_environ_flags_():
     os.environ['MASTER_PORT'] = str(12355)
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "expandable_segments:True"
+    os.environ["TORCH_LOGS"]="+dynamo"
+    os.environ["TORCHDYNAMO_VERBOSE"]="1"
+    os.environ.update({
+        "NCCL_LL128_BUFFSIZE": "-2",
+        "NCCL_LL_BUFFSIZE": "-2",
+        "NCCL_PROTO": "SIMPLE,LL,LL128",
+    })
+    # os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "expandable_segments:True"
+    if is_a100(current_gpu()):
+        print(f"using a100..")
+        set_a100_flags_()
+
+def set_a100_flags_():
+    os.environ['NCCL_P2P_LEVEL'] = 'NVL'
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
 
 def make_timeout(s):
   return datetime.timedelta(seconds=s)
 
 def setup_process_group_(rank, world_size):
    dist.init_process_group('nccl', rank=rank, world_size=world_size, 
-                           timeout=make_timeout(60))
+                           timeout=make_timeout(180))
   
 def cleanup_process_group_():
     dist.destroy_process_group()
@@ -241,6 +258,9 @@ def use_fsdp(x):
         return x.fsdp and is_parallel(count_gpus_args(x))
     else:
         raise ValueError("type x not supported")
+    
+def use_compile(x):
+    return x.compile
 
 def use_dist_sampler(args):
     if is_args(args):
@@ -364,6 +384,9 @@ def count_arms(args):
 def load_model(file, device='cpu'):
     return torch.load(file, map_location=device)
 
+def use_mixed(args):
+    return args.mixed
+
 def fsdp_main(rank, world_size, args):
     setup_print_(rank)
     print(f"starting...")
@@ -392,19 +415,23 @@ def fsdp_main(rank, world_size, args):
     else:
         trained_model = ''
 
-    data = load_data(datafile=sub_file)
+    data = load_data(datafile=data_file)
 
 
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
                            device=rank,
-                           aug_file=aug_file)
+                           aug_file=aug_file,
+                           load_weights=args.load_weights)
     
     fold = 0
     loaders = cplMixVAE.get_dataloader(dataset=data['log1p'],
                                        label=data['cluster'],
                                        batch_size=args.batch_size,
                                        n_aug_smp=0,
-                                       fold=fold)
+                                       fold=fold,
+                                       rank=rank,
+                                       world_size=world_size,
+                                       use_dist_sampler=use_dist_sampler(args))
     _, train_loader, _, test_loader = loaders
 
     cplMixVAE.init_model(n_categories=args.n_categories,
@@ -428,17 +455,38 @@ def fsdp_main(rank, world_size, args):
                          n_pr=args.n_pr,
                          mode=args.loss_mode)
     
+    cplMixVAE.model = cplMixVAE.model.to(rank)
     if use_fsdp(args):
+        print('using fsdp...')
+        if use_mixed(args):
+            mp = MixedPrecision(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,
+                buffer_dtype=torch.bfloat16
+            )
+        else:
+            mp = None
         cplMixVAE.model = fsdp(cplMixVAE.model, auto_wrap_policy=make_wrap_policy(20000),
-                            use_orig_params=True, device_id=rank)
+                            use_orig_params=True, device_id=rank, sharding_strategy=ShardingStrategy.NO_SHARD,
+                            mixed_precision=mp)
+    
+    if use_compile(args):
+        print('compiling model...')
+        cplMixVAE.model = torch.compile(cplMixVAE.model)
     
     # TODO: test loss all reduce
     lc = make_logger_config(use_dist_sampler=use_dist_sampler(args),
                                 n_epoch=args.n_epoch,
                                 use_fsdp=use_fsdp(args),
                                 world_size=world_size,
-                                arms=count_arms(args))
+                                arms=count_arms(args),
+                                augmentation=use_augmentation(args))
+    if not is_master(rank):
+        # TODO: this is a HACK!!!!
+        sleep(5)
     log, cleanup_log_ = make_logger('mmidas', config=lc)
+
+    
     model_file = cplMixVAE.train_(train_loader=train_loader,
                                     test_loader=test_loader,
                                     n_epoch=args.n_epoch,
@@ -450,8 +498,12 @@ def fsdp_main(rank, world_size, args):
                                     rank=rank,
                                     world_size=world_size,
                                     log=log)
+        
     
     print_summary(cplMixVAE.model, rank)
+    if use_augmentation(args) and is_master(rank):
+        print(f"augmenter params: {count_params(cplMixVAE.netA)}")
+        print_sizeof(cplMixVAE.netA)
     cleanup_log_()
     cleanup_distributed_()
 
@@ -474,7 +526,7 @@ if __name__ == "__main__":
     parser.add_argument("--lam", default=1, type=float, help="coupling factor")
     parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
     parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-    parser.add_argument("--n_epoch", default=3, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch", default=10, type=int, help="Number of epochs to train")
     parser.add_argument("--n_epoch_p", default=10000, type=int, help="Number of epochs to train pruning algorithm")
     parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
     parser.add_argument("--max_prun_it", default=50, type=int, help="maximum number of pruning iterations")
@@ -483,6 +535,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
     parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
     parser.add_argument("--augmentation", default=False, action='store_true', help="enable VAE-GAN augmentation")
+    parser.add_argument("--load_weights", default=False, action='store_true', help="load previous augmentation weights")
     # parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
     parser.add_argument("--lr", default=.001, type=float, help="learning rate")
     parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
@@ -496,12 +549,18 @@ if __name__ == "__main__":
     parser.add_argument("--gpus", default=-1, type=int, help="number of gpus")
     parser.add_argument("--fsdp", default=False, action='store_true', help="use fsdp")
     parser.add_argument("--use_dist_sampler", default=False, action='store_true', help="use distributed sampler")
+    parser.add_argument("--compile", action='store_true', default=False, help='torch.compile the model')
+    parser.add_argument("--mixed", action="store_true", default=False,
+                        help="enable bf16 mixed precision training")
 
 
     args = make_args(parser)
     # main(**vars(args))
     world_size = count_gpus_args(args)
     spawn_(fsdp_main, world_size, args)
+
+# normal mmidas model per epoch: 
+
 
 # max arms
 # smartseq: 
@@ -530,3 +589,10 @@ if __name__ == "__main__":
 #  2. time series( electrophysiology)
 #  3. morphological (arbor density)
 #  4. rna seq
+
+
+# TODO:
+    # [] add a100 optimizations
+    # [] lscpu for num threads
+    # [] add back adist sampler
+    # [] 5 horizontal mmidas layers, add noise, then 5 more horizontal mmidas layers?

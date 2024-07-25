@@ -53,6 +53,9 @@ parser.add_argument("--device", default='cpu', type=str, help="computing device,
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
          p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset):
 
+    # try int(device):
+
+
     # Load configuration paths
     toml_file = 'pyproject.toml'
     config = get_paths(toml_file=toml_file, sub_file=dataset)
