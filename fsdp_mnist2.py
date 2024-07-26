@@ -389,7 +389,7 @@ def fsdp_main(rank, world_size, args):
     train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=True)
     test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
 
-    cuda_kwargs = {'num_workers': 8,
+    cuda_kwargs = {'num_workers': 4,
                     'pin_memory': True,
                     'shuffle': False,
                     'drop_last': True,
@@ -485,3 +485,8 @@ if __name__ == '__main__':
     world_size = count_gpus_args(args)
     print(f"world_size: {world_size}")
     spawn_processes_(fsdp_main, world_size, args)
+
+
+# test different # of cpus on a100
+# see if i can get a speedup with 2 cpus, lots of memory (~100gb)
+# figure out the cpu problem ...
