@@ -288,16 +288,17 @@ def set_wandb_flags_():
 def make_logger_config(**kwargs):
     return pmap(kwargs)
 
-def make_logger(project, config={}):
+def make_logger(project, config={}, group_name=None):
     set_wandb_flags_()
-    group = next_group_name_wandb(project)
+    if not group_name:
+        group = next_group_name_wandb(project)
+    else:
+        group = group_name
     print(f"group: {group}")
     run = wandb.init(project=project, group=group, config=dict(config))
     wandb.define_metric('epoch')
     wandb.define_metric('avg_rec_loss', step_metric='epoch')
     def log(metrics, **kwargs):
-
-
         run.log(metrics, **kwargs)
     tag_(log, 'wandb')
 
@@ -386,6 +387,12 @@ def load_model(file, device='cpu'):
 
 def use_mixed(args):
     return args.mixed
+
+def set_group_name_(args, name):
+    args.group_name = name
+
+def get_group_name(args):
+    return args.group_name
 
 def fsdp_main(rank, world_size, args):
     setup_print_(rank)
@@ -481,10 +488,8 @@ def fsdp_main(rank, world_size, args):
                                 world_size=world_size,
                                 arms=count_arms(args),
                                 augmentation=use_augmentation(args))
-    if not is_master(rank):
-        # TODO: this is a HACK!!!!
-        sleep(5)
-    log, cleanup_log_ = make_logger('mmidas', config=lc)
+    
+    log, cleanup_log_ = make_logger('mmidas', config=lc, group_name=get_group_name(args))
 
     
     model_file = cplMixVAE.train_(train_loader=train_loader,
@@ -556,6 +561,7 @@ if __name__ == "__main__":
 
     args = make_args(parser)
     # main(**vars(args))
+    set_group_name_(args, next_group_name_wandb('mmidas'))
     world_size = count_gpus_args(args)
     spawn_(fsdp_main, world_size, args)
 

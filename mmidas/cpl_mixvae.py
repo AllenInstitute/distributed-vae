@@ -1929,8 +1929,8 @@ class cpl_mixVAE:
         optimD = optim.Adam([{'params': netD.parameters()}], lr=self.aug_param['learning_rate'])
         optimA = optim.Adam([{'params': self.netA.parameters()}], lr=self.aug_parm['learning_rate'])
 
-        real_label = 1.
-        fake_label = 0.
+        REAL_LABEL = 1.
+        FAKE_LABEL = 0.
         A_losses = []
         D_losses = []
 
@@ -1964,7 +1964,7 @@ class cpl_mixVAE:
                     d_idx = d_idx.to(int)
                         
                     optimD.zero_grad()
-                    label = torch.full((batch_size,), real_label, device=rank)
+                    label = torch.full((batch_size,), REAL_LABEL, device=rank)
                     _, probs_real = netD(data_bin)
                     loss_real = criterionD(probs_real.view(-1), label)
 
@@ -1974,7 +1974,7 @@ class cpl_mixVAE:
                     else:
                         optim_D = False
 
-                    label.fill_(fake_label)
+                    label.fill_(FAKE_LABEL)
 
                     trans_data = []
                     tt = time.time()
@@ -1995,6 +1995,7 @@ class cpl_mixVAE:
                             gen_data2_bin = 0. * gen_data2
                             gen_data_bin[gen_data > 1e-3] = 1.
                             gen_data2_bin[gen_data2 > 1e-3] = 1.
+                            gen_data = 1. * gen_data2
 
                         else:
                             trans_data.append(data)

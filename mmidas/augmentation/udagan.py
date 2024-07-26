@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from mmidas.augmentation.aug_utils import *
 
 
+
 class Augmenter(nn.Module):
     def __init__(self, noise_dim, latent_dim, input_dim=5000, n_dim=100, n_zim=1, p_drop=0.2):
         super().__init__()
