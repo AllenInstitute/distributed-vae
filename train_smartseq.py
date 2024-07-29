@@ -255,7 +255,13 @@ def is_args(x):
 
 def use_fsdp(x):
     if is_args(x):
-        return x.fsdp and is_parallel(count_gpus_args(x))
+        return x.fsdp and is_parallel(count_gpus_args(x)) and not (get_device(x) == 'cpu' or get_device(x) == 'mps')
+    else:
+        raise ValueError("type x not supported")
+
+def get_device(x):
+    if is_args(x):
+        return x.device
     else:
         raise ValueError("type x not supported")
     
