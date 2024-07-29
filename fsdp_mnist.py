@@ -560,17 +560,17 @@ def fsdp_main(rank, world_size, args):
       plt.plot(val_losses.cpu().numpy(), label='test')
       # plt.plot(epoch_times.cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/losses_{world_size}.png')
+      plt.savefig(f'plots/losses_{world_size}_{use_orig_params(args)}.png')
       plt.close()
 
       print(f"epoch times: {epoch_times}")
       plt.plot(epoch_times.cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/epoch_times_{world_size}.png')
+      plt.savefig(f'plots/epoch_times_{world_size}_{use_orig_params(args)}.png')
       plt.close()
 
       # save losses to "losses_{world_size}.txt"
-      with open(f'plots/losses_{world_size}.txt', 'w') as f:
+      with open(f'plots/losses_{world_size}_{use_orig_params(args)}.txt', 'w') as f:
         f.write(f"losses:\n")
         for l in losses:
           f.write(f"{l}\n")
