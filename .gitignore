@@ -14,3 +14,7 @@ results/
 smartseq_augmenter/
 slurm-log/
 traces/
+*.txt
+plots/
+*.png
+*.cpython

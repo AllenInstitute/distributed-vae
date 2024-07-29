@@ -172,6 +172,12 @@ def profile_data_loading(loader, epochs, rank):
                             'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
             print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
 
+def count_workers_():
+    if hasattr(os, 'sched_getaffinity'):
+        return len(os.sched_getaffinity(0))
+    else:
+        return os.cpu_count()
+
 class cpl_mixVAE:
 
     def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-8, 
@@ -256,12 +262,14 @@ class cpl_mixVAE:
 
         if world_size > 1 and use_dist_sampler:
             train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
-            train_loader = DataLoader(train_data, batch_size=batch_size, drop_last=True, pin_memory=True, persistent_workers=True, num_workers=2,
-                                  sampler=train_sampler)
+            train_loader = DataLoader(train_data, batch_size=batch_size, 
+                                      drop_last=True, pin_memory=True, 
+                                      persistent_workers=True, num_workers=count_workers_(),
+                                      sampler=train_sampler)
         else:
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, persistent_workers=True,
-                                      num_workers=2)
+                                      num_workers=count_workers_())
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
@@ -275,12 +283,12 @@ class cpl_mixVAE:
         if world_size > 1 and use_dist_sampler:
             print('using distributed sampler...')
             test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=2,
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(),
                                     sampler=test_sampler)
         else:
             test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
                                      pin_memory=True, persistent_workers=True,
-                                     num_workers=2)
+                                     num_workers=count_workers_())
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
