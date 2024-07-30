@@ -69,10 +69,19 @@ def count_gpus():
 def setup_print_(rank):
   builtins.print = partial(print, f"[rank {rank}]")
 
+def find_free_port():
+  import socket
+  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  s.bind(('', 0))
+  port = s.getsockname()[1]
+  s.close()
+  return port
+
+# TODO: determine master_addr and master_port automatically
 def set_environ_flags_():
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = str(12355)
+    # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ['MASTER_ADDR'] = 'n279'
+    os.environ['MASTER_PORT'] = str(12345)
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
     if 'a100' in torch.cuda.get_device_name().lower():
@@ -136,7 +145,7 @@ def print_train_loss(train_loss, epoch, rank):
 def print_test_loss(test_loss, rank):
     if is_master(rank):
         avg_loss = test_loss[0] / test_loss[2]
-        accuracy = 100. * test_loss[1] / test_loss[2]
+        accuracy = test_loss[1] / test_loss[2]
         print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
             avg_loss, int(test_loss[1]), int(test_loss[2]), accuracy))
 
@@ -173,7 +182,7 @@ def clean_distributed_wrapper_(a, b):
 signal.signal(signal.SIGINT, clean_distributed_wrapper_)
 
 class Net(nn.Module):
-  def __init__(self):
+  def __init__(self, use_batchnorm=False):
     super(Net, self).__init__()
     self.conv1 = nn.Conv2d(1, 32, 3, 1)
     self.conv2 = nn.Conv2d(32, 64, 3, 1)
@@ -182,6 +191,9 @@ class Net(nn.Module):
     self.fc1 = nn.Linear(9216, 128)
     self.bn1 = nn.BatchNorm1d(128)
     self.fc2 = nn.Linear(128, 10)
+    if not use_batchnorm:
+       print(f'warning: not using batchnorm')
+    self.use_batchnorm = use_batchnorm
 
   def forward(self, x):
     x = self.conv1(x)
@@ -192,7 +204,8 @@ class Net(nn.Module):
     x = self.dropout1(x)
     x = torch.flatten(x, 1)
     x = self.fc1(x)
-    x = self.bn1(x)
+    if self.use_batchnorm:
+      x = self.bn1(x)
     x = F.relu(x)
     x = self.dropout2(x)
     x = self.fc2(x)
@@ -238,9 +251,9 @@ class DeepNet(nn.Module):
     output = F.log_softmax(x, dim=1)
     return output
   
-def make_model(s, rank):
+def make_model(s, rank, **kwargs):
   if s == 'shallow':
-    model = Net()
+    model = Net(use_batchnorm=kwargs.get('use_batchnorm', False))
   elif s == 'deep':
     model = DeepNet()
   else:
@@ -376,7 +389,7 @@ def make_test_data(transform):
   return datasets.MNIST('../data', train=False,
                   transform=transform)
 
-def make_dist_sampler(data, rank, world_size, shuffle=True):
+def make_dist_sampler(data, rank, world_size, shuffle=False):
   return DistributedSampler(data, rank=rank, num_replicas=world_size, shuffle=shuffle)
 
 def record_cuda_event_(event):
@@ -410,28 +423,34 @@ def get_mixed_args(args):
 def use_compile(args):
   return args.compile
 
-def train_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None):
+def convert(x, from_dtype, to_dtype):
+  match from_dtype, to_dtype:
+    case 'B', 'MB':
+      return x / 1024 / 1024
+    case _:
+      raise ValueError(f"Unknown dtype: {from_dtype}")
+
+def train_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None, world_size=None, mem=None):
     set_mode_(model, 'train')
     ddp_loss = make_train_loss(model, rank)
     if sampler:
         sampler.set_epoch(epoch)
+
     for batch_idx, (data, target) in make_pbar(train_loader, rank, enumerate):
-    # for i in tqdm(range(len(train_loader))):
         data, target = data.to(rank), target.to(rank)
-        # data = torch.empty(64, 1, 28, 28, device=rank, dtype=torch.float32)
-        # target = torch.zeros(64, device=rank, dtype=torch.uint8)
         optimizer.zero_grad()
         output = model(data)
         loss = F.nll_loss(output, target, reduction='sum')
+        mem.append(convert(torch.cuda.memory_allocated(), 'B', 'MB'))
         loss.backward()
         step_(optimizer)
         ddp_loss[0] += loss.item()
-        ddp_loss[1] += data.size(0)
+        ddp_loss[1] = train_loader.batch_size
 
+    ddp_loss[0] = ddp_loss[0] / (batch_idx + 1)
     all_reduce_(ddp_loss, op='sum')
-    losses[epoch] = 100 * (ddp_loss[0] / ddp_loss[1])
+    losses[epoch] = (ddp_loss[0] / ddp_loss[1])
     print_train_loss(ddp_loss, epoch, rank)
-
 def train_no_cpu_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None):
    pass
 
@@ -439,19 +458,17 @@ def test(model, rank, test_loader, val_losses, epoch):
     set_mode_(model, 'eval')
     ddp_loss = make_test_loss(model, rank)
     with torch.no_grad():
-      for data, target in make_pbar(test_loader, rank):
-      # for i in tqdm(range(len(test_loader))):
+      for batch_indx, (data, target) in make_pbar(test_loader, rank, enumerate):
         data, target = data.to(rank), target.to(rank)
-        # data = torch.zeros(64, 1, 28, 28, device=rank, dtype=torch.float32)
-        # target = torch.zeros(64, device=rank, dtype=torch.uint8)
         output = model(data)
-        ddp_loss[0] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-        pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+        ddp_loss[0] += F.nll_loss(output, target, reduction='sum').item()
+        pred = output.argmax(dim=1, keepdim=True) 
         ddp_loss[1] += pred.eq(target.view_as(pred)).sum().item()
-        ddp_loss[2] += data.size(0)
+        ddp_loss[2] = test_loader.batch_size
 
+    ddp_loss[0] = ddp_loss[0] / (batch_indx + 1)
     all_reduce_(ddp_loss, op='sum')
-    val_losses[epoch] = 100 * (ddp_loss[0] / ddp_loss[2])
+    val_losses[epoch] = (ddp_loss[0] / ddp_loss[2])
     print_test_loss(ddp_loss, rank)
 
 def get_sharding_strategy(args):
@@ -499,8 +516,12 @@ def fsdp_main(rank, world_size, args):
     train_data = make_train_data(transform)
     test_data = make_test_data(transform)
 
-    train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=True)
-    test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
+    if args.use_dist_sampler:
+      train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=False)
+      test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
+    else:
+      train_sampler = None
+      test_sampler = None
 
     print(f"num workers: {count_num_workers(args)}")
     print(f"prefetch_factor: {get_prefetch_factor(args)}")
@@ -508,7 +529,7 @@ def fsdp_main(rank, world_size, args):
                     'pin_memory': True,
                     'shuffle': False,
                     'drop_last': True,
-                    'persistent_workers': count_num_workers(args) > 0, # this is important!!!
+                    'persistent_workers': count_num_workers(args) > 0,
                     'prefetch_factor': get_prefetch_factor(args),
                     }
     train_loader_config = make_loader_config(batch_size=args.batch_size, 
@@ -523,7 +544,7 @@ def fsdp_main(rank, world_size, args):
     start_event = make_cuda_event()
     end_event = make_cuda_event()
 
-    model = make_model(args.model, rank)
+    model = make_model(args.model, rank, use_batchnorm=args.use_batchnorm)
     strat = get_sharding_strategy(args)
     # model = fsdp(model, auto_wrap_policy=make_wrap_policy(100), 
     #              use_orig_params=use_orig_params(args), 
@@ -531,7 +552,9 @@ def fsdp_main(rank, world_size, args):
     #              sharding_strategy=string_to_sharding_strategy(strat))
     if world_size > 1:
       print("using fsdp")
-      model = fsdp(model, auto_wrap_policy=make_wrap_policy(20000), use_orig_params=use_orig_params(args))
+      model = fsdp(model, auto_wrap_policy=make_wrap_policy(20000), 
+                  #  use_orig_params=use_orig_params(args),
+                   )
       # model = DDP(model, device_ids=[rank], output_device=rank)
     if use_compile(args):
        model = compile_model(model)
@@ -539,13 +562,14 @@ def fsdp_main(rank, world_size, args):
 
     losses = torch.empty(args.epochs, device=rank)
     epoch_times = torch.empty(args.epochs, device=rank)
+    mem = []
 
     val_losses = torch.empty(args.epochs, device=rank)
     scheduler = make_scheduler(optimizer, step_size=1, gamma=args.gamma)
     record_cuda_event_(start_event)
     for epoch in range(args.epochs):
         t0 = time.time()
-        train_(model, rank, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times)
+        train_(model, rank, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times, world_size=world_size, mem=mem)
         test(model, rank, test_loader, val_losses, epoch)
         step_(scheduler)
         _t = time.time() - t0
@@ -554,23 +578,24 @@ def fsdp_main(rank, world_size, args):
     record_cuda_event_(end_event)
 
     if is_master(rank):
+    # if False:
       print(f"losses: {losses}")
       print(f"val_losses: {val_losses}")
-      plt.plot(losses.cpu().numpy(), label='train')
-      plt.plot(val_losses.cpu().numpy(), label='test')
+      plt.plot(losses[1:].cpu().numpy(), label='train')
+      plt.plot(val_losses[1:].cpu().numpy(), label='test')
       # plt.plot(epoch_times.cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/losses_{world_size}_{use_orig_params(args)}.png')
+      plt.savefig(f'plots/losses_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.png')
       plt.close()
 
-      print(f"epoch times: {epoch_times}")
-      plt.plot(epoch_times.cpu().numpy(), label='epoch_times')
+      print(f"epoch times: {epoch_times[1:]}")
+      plt.plot(epoch_times[1:].cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/epoch_times_{world_size}_{use_orig_params(args)}.png')
+      plt.savefig(f'plots/epoch_times_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.png')
       plt.close()
 
       # save losses to "losses_{world_size}.txt"
-      with open(f'plots/losses_{world_size}_{use_orig_params(args)}.txt', 'w') as f:
+      with open(f'plots/losses_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.txt', 'w') as f:
         f.write(f"losses:\n")
         for l in losses:
           f.write(f"{l}\n")
@@ -591,6 +616,11 @@ def fsdp_main(rank, world_size, args):
         f.write(f"\n")
         f.write(f"args:\n") 
         f.write(f"{args}\n")
+
+    with open(f'plots/mem_{world_size}_{use_orig_params(args)}_{args.epochs}_rank{rank}_sampler{args.use_dist_sampler}.txt', 'w') as f:
+      f.write(f"mem (rank {rank}):\n")
+      for l in mem:
+        f.write(f"{l}\n")
 
     synchronize_gpus_()
     print_summary(cuda_elapsed_time(start_event, end_event), 
@@ -656,6 +686,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_orig_params',  default=False, action='store_true')
     parser.add_argument('--num_workers', type=int, default=-1)
     parser.add_argument('--prefetch_factor', type=int, default=-1)
+    parser.add_argument('--use_batchnorm', default=False, action='store_true')
+    parser.add_argument('--use_dist_sampler', default=False, action='store_true')
     args = make_args(parser)
     set_seed_(args.seed)
 
@@ -678,9 +710,9 @@ if __name__ == '__main__':
 # dataloader:
   # fsdp(200000): ~3.75s
   # fsdp(20000): ~3.9s
-  # fsdp(20000, limit_all_fathers=False): ~3.75s
-  # fsdp(20000, forward_prefetch=True): ~3.85s
-  # fsdp(20000, limit_all_gathers=False, forward_prefetch=True): ~4s
+    # fsdp(20000, limit_all_fathers=False): ~3.75s
+    # fsdp(20000, forward_prefetch=True): ~3.85s
+    # fsdp(20000, limit_all_gathers=False, forward_prefetch=True): ~4s
   # fsdp(2000): ~4.3s
   # fsdp(100): ~5.9s
   # ddp: ~2.75s
@@ -689,3 +721,10 @@ if __name__ == '__main__':
   # deep
   # fsdp(200000): ~88s
   # fsdp(20000): ~90s
+
+
+# python fsdp_mnist.py --epochs 1000 --model shallow --gpus 2 --batch-size 256
+  # [x] with distributeds sampler 
+  # [] without distributed sampler
+  # [] without sharding
+  # [] aggregate plots

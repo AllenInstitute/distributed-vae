@@ -66,8 +66,9 @@ def setup_print_(rank):
 
 def set_environ_flags_():
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = str(12355)
+    os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environment['MASTER_ADDR'] = 
+    os.environ['MASTER_PORT'] = str(12345)
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
     if is_a100(current_gpu()):
@@ -75,7 +76,7 @@ def set_environ_flags_():
 
 def setup_process_group_(rank, world_size):
    dist.init_process_group('nccl', rank=rank, world_size=world_size, 
-                           timeout=datetime.timedelta(seconds=60))
+                           timeout=datetime.timedelta(seconds=120))
   
 def cleanup_process_group_():
     dist.destroy_process_group()
@@ -388,6 +389,8 @@ def fsdp_main(rank, world_size, args):
 
     train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=True)
     test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
+    # train_sampler = None
+    # test_sampler = None
 
     cuda_kwargs = {'num_workers': 4,
                     'pin_memory': True,

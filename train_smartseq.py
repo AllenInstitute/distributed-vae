@@ -45,8 +45,6 @@ from mmidas.cpl_mixvae import cpl_mixVAE, is_master
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import (load_data, get_loaders, din,
                                      c_onehot_data, c_p_data, make_data, make_loaders)
-
-
 from pyrsistent import PMap, PVector
 def set_call_(cls, fun):
     cls.__call__ = fun
