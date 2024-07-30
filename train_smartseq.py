@@ -268,7 +268,7 @@ def use_compile(x):
 
 def use_dist_sampler(args):
     if is_args(args):
-        return args.use_dist_sampler
+        return args.use_dist_sampler and args.device != 'cpu' and args.device != 'mps'
     else:
         raise ValueError("type x not supported")
 
@@ -402,7 +402,11 @@ def fsdp_main(rank, world_size, args):
     setup_print_(rank)
     print(f"starting...")
 
-    setup_distributed_(rank, world_size)
+    if world_size > 1:
+        setup_distributed_(rank, world_size)
+
+    if args.device == 'mps' or args.device == 'cpu':
+        rank = args.device
 
     toml_file = 'pyproject.toml'
     sub_file = 'mouse_smartseq'
@@ -428,7 +432,7 @@ def fsdp_main(rank, world_size, args):
 
     data = load_data(datafile=data_file)
 
-
+    
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
                            device=rank,
                            aug_file=aug_file,
@@ -514,7 +518,8 @@ def fsdp_main(rank, world_size, args):
         print(f"augmenter params: {count_params(cplMixVAE.netA)}")
         print_sizeof(cplMixVAE.netA)
     cleanup_log_()
-    cleanup_distributed_()
+    if world_size > 1:
+        cleanup_distributed_()
 
 def spawn_(fun, procs, args):
     mp.spawn(fun, args=(procs, args), nprocs=procs, join=True)
@@ -567,7 +572,10 @@ if __name__ == "__main__":
     # main(**vars(args))
     set_group_name_(args, next_group_name_wandb('mmidas'))
     world_size = count_gpus_args(args)
-    spawn_(fsdp_main, world_size, args)
+    if world_size == 0:
+        fsdp_main(0, 1, args)
+    else:
+        spawn_(fsdp_main, world_size, args)
 
 # normal mmidas model per epoch: 
 

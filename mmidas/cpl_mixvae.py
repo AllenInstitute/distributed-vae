@@ -57,7 +57,7 @@ def current_gpu():
     return torch.cuda.current_device()
 
 def is_master(rank):
-    return rank == 0
+    return rank == 0 or rank == 'mps' or rank == 'cpu'
 
 def transform_loader(loader, *funs):
     return reduce(lambda acc, f: f(acc), funs, loader)
@@ -203,6 +203,7 @@ class cpl_mixVAE:
             self.device = torch.device('cpu')
             print('---> Computional node is not assigned, using CPU!')
         else:
+            print(f"device: {device}")
             if device == 'cpu':
                 self.device = torch.device('cpu')
                 print('---> Using CPU!')
@@ -1394,7 +1395,6 @@ class cpl_mixVAE:
     def train_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
                c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
                log=None):
-        assert is_gpu_available(), "error: no GPU available"
 
         # define current_time
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
