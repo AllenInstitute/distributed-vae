@@ -4,6 +4,7 @@ import builtins
 import datetime
 from functools import partial, reduce
 import signal
+import socket
 import time
 import os
 
@@ -40,6 +41,9 @@ import matplotlib.pyplot as plt
 
 from torch_utils import current_gpu, cpu_count, set_gpu_
 
+def prn(*args, **kw):
+  print(*args, **kw)
+
 def is_imported(m):
   return m in globals()
 
@@ -60,28 +64,33 @@ def set_mode_(model, mode):
   else:
     raise ValueError(f"Unknown mode: {mode}")
 
-def print_gpu():
+def prn_gpu():
   print(f"cuda device: {torch.cuda.current_device()}")
 
-def count_gpus():
+def ct_gpu():
   return torch.cuda.device_count()
 
-def setup_print_(rank):
-  builtins.print = partial(print, f"[rank {rank}]")
+def set_prn_(r):
+  builtins.print = partial(print, f"[r{r}]")
 
-def find_free_port():
-  import socket
-  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-  s.bind(('', 0))
-  port = s.getsockname()[1]
-  s.close()
+def ct_dir(pth):
+  return sum(os.path.isdir(os.path.join(pth, x)) for x in os.listdir(pth))
+
+def get_free_addr():
+  return socket.gethostbyname_ex(socket.gethostname())[2][0]
+    
+def get_free_port(addr):
+  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind((addr, 0))
+    s.listen(1)
+    port = s.getsockname()[1]
   return port
 
 # TODO: determine master_addr and master_port automatically
-def set_environ_flags_():
+def su_env_(a, p):
     # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ['MASTER_ADDR'] = 'n279'
-    os.environ['MASTER_PORT'] = str(12345)
+    os.environ['MASTER_ADDR'] = str(a)
+    os.environ['MASTER_PORT'] = str(p)
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
     if 'a100' in torch.cuda.get_device_name().lower():
@@ -93,27 +102,27 @@ def set_environ_flags_():
       # torch.backends.cudnn.benchmark = True
 
 
-def make_timeout(s):
+def mk_to(s):
   return datetime.timedelta(seconds=s)
 
-def setup_process_group_(rank, world_size):
-   dist.init_process_group('nccl', rank=rank, world_size=world_size, 
-                           timeout=make_timeout(120))
+def su_pg_(r, ws):
+   dist.init_process_group('nccl', rank=r, world_size=ws, 
+                           timeout=mk_to(120))
   
-def cleanup_process_group_():
+def cu_pg_():
     dist.destroy_process_group()
 
-def setup_distributed_(rank, world_size):
-  set_environ_flags_()
-  setup_process_group_(rank, world_size)
+def su_dist_(r, ws, a=None, p=None):
+  su_env_(a, p)
+  su_pg_(r, ws)
 
-def cleanup_distributed_():
+def cu_dist_():
   dist.destroy_process_group()
 
 def is_sum(op):
   return op == 'sum'
 
-def is_product(op):
+def is_prod(op):
   return op == 'product'
 
 def is_min(op):
@@ -125,7 +134,7 @@ def is_max(op):
 def make_reduce_op(op):
   if is_sum(op):
     return dist.ReduceOp.SUM
-  elif is_product(op):
+  elif is_prod(op):
     return dist.ReduceOp.PRODUCT
   elif is_min(op):
     return dist.ReduceOp.MIN
@@ -137,49 +146,46 @@ def make_reduce_op(op):
 def all_reduce_(tensor, op='sum'):
   dist.all_reduce(tensor, op=make_reduce_op(op))
 
-def print_train_loss(train_loss, epoch, rank):
-   if is_master(rank):
+def print_train_loss(train_loss, epoch, r):
+   if is_master(r):
       print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, train_loss[0] / train_loss[1]))
 
 
-def print_test_loss(test_loss, rank):
-    if is_master(rank):
+def print_test_loss(test_loss, r):
+    if is_master(r):
         avg_loss = test_loss[0] / test_loss[2]
         accuracy = test_loss[1] / test_loss[2]
         print('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
             avg_loss, int(test_loss[1]), int(test_loss[2]), accuracy))
 
-def print_epoch(epoch, time, rank):
-  if is_master(rank):
+def print_epoch(epoch, time, r):
+  if is_master(r):
       print(f"Epoch {epoch} took {time}sec")
 
-def synchronize_gpus_():
+def sync_():
   torch.cuda.synchronize()
 
-def cuda_elapsed_time(start_event, end_event):
-  return start_event.elapsed_time(end_event) / 1000
+def cuda_time(start, end):
+  return start.elapsed_time(end) / 1000
 
-def print_cuda_elapsed_time(time):
+def print_cuda_time(time):
   print(f"CUDA event elapsed time: {time}sec")
 
-def print_summary(time, model, rank):
-  if is_master(rank):
-    print_cuda_elapsed_time(time)
+def print_summary(time, model, r):
+  if is_master(r):
+    print_cuda_time(time)
     print(f"{model}")
 
 def make_cuda_event():
   return torch.cuda.Event(enable_timing=True)
 
-def fsdp(*args, **kwargs):
-  return FSDP(*args, **kwargs)
+def fsdp(*args, **kw):
+  return FSDP(*args, **kw)
 
-def ddp(*args, **kwargs):
-  return DDP(*args, **kwargs)
+def ddp(*args, **kw):
+  return DDP(*args, **kw)
 
-def clean_distributed_wrapper_(a, b):
-  cleanup_distributed_()
-
-signal.signal(signal.SIGINT, clean_distributed_wrapper_)
+signal.signal(signal.SIGINT, lambda _, __: cu_dist_())
 
 class Net(nn.Module):
   def __init__(self, use_batchnorm=False):
@@ -251,14 +257,14 @@ class DeepNet(nn.Module):
     output = F.log_softmax(x, dim=1)
     return output
   
-def make_model(s, rank, **kwargs):
+def make_model(s, r, **kw):
   if s == 'shallow':
-    model = Net(use_batchnorm=kwargs.get('use_batchnorm', False))
+    model = Net(use_batchnorm=kw.get('use_batchnorm', False))
   elif s == 'deep':
     model = DeepNet()
   else:
     raise ValueError(f"Unknown model: {s}")
-  return model.to(rank)
+  return model.to(r)
 
 def make_optimizer(model, lr):
   if is_mnist_net(model):
@@ -275,7 +281,7 @@ def is_bf16(p):
 def is_fp32(p):
   return p == 'fp32'
 
-def string_to_dtype(s):
+def str2dt(s):
   if s == 'fp16':
     return torch.float16
   elif s == 'bf16':
@@ -304,7 +310,7 @@ def string_to_sharding_strategy(s):
    
 
 def make_mixed_precision(p):
-  dtype = string_to_dtype(p)
+  dtype = str2dt(p)
   return MixedPrecision(
     param_dtype=dtype,
     reduce_dtype=dtype,
@@ -314,22 +320,22 @@ def make_mixed_precision(p):
 def make_wrap_policy(params):
   return partial(size_based_auto_wrap_policy, min_num_params=params)
    
-def is_master(rank):
-    return rank == 0
+def is_master(r):
+    return r == 0
 
 def transform_loader(loader, *funs):
     return reduce(lambda acc, f: f(acc), funs, loader)
 
-def make_pbar(loader, rank, *funs):
+def make_pbar(loader, r, *funs):
     total = len(loader)
     loader = transform_loader(loader, *funs)
-    if is_master(rank):
+    if is_master(r):
         return tqdm(loader, total=total, unit_scale=True)
     else:
         return loader
     
-def make_loader_config(**kwargs):
-   return pmap(kwargs)
+def make_loader_config(**kw):
+   return pmap(kw)
 
 def make_loader(data, **config):
     return torch.utils.data.DataLoader(data, **config)
@@ -363,15 +369,15 @@ def is_compiled(model):
 def is_mnist_net(model):
   return is_shallow_net(module(model)) or is_deep_net(module(model))
     
-def make_train_loss(model, rank):
+def make_train_loss(model, r):
     if is_mnist_net(model):
-        return torch.zeros(2).to(rank)
+        return torch.zeros(2).to(r)
     else:
        raise ValueError(f"Unknown model: {model}")
 
-def make_test_loss(model, rank):
+def make_test_loss(model, r):
     if is_mnist_net(model):
-        return torch.zeros(3, device=rank)
+        return torch.zeros(3, device=r)
     else:
        raise ValueError(f"Unknown model: {model}")
     
@@ -389,13 +395,13 @@ def make_test_data(transform):
   return datasets.MNIST('../data', train=False,
                   transform=transform)
 
-def make_dist_sampler(data, rank, world_size, shuffle=False):
-  return DistributedSampler(data, rank=rank, num_replicas=world_size, shuffle=shuffle)
+def make_dist_sampler(data, r, ws, shuffle=False):
+  return DistributedSampler(data, rank=r, num_replicas=ws, shuffle=shuffle)
 
 def record_cuda_event_(event):
   event.record()
 
-def barrier_distributed_():
+def barrier_():
   dist.barrier()
 
 def lower(s):
@@ -404,11 +410,11 @@ def lower(s):
 def is_a100(name):
    return 'a100' in lower(name)
 
-def current_gpu_is_a100():
+def using_a100():
   return is_a100(torch.cuda.get_device_name())
 
-def save_model_(model, rank):
-  if is_master(rank):
+def save_model_(model, r):
+  if is_master(r):
     torch.save(model.state_dict(), "mnist_cnn.pt")
 
 def make_scheduler(optimizer, step_size, gamma):
@@ -430,14 +436,14 @@ def convert(x, from_dtype, to_dtype):
     case _:
       raise ValueError(f"Unknown dtype: {from_dtype}")
 
-def train_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None, world_size=None, mem=None):
+def train_(model, r, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None, ws=None, mem=None):
     set_mode_(model, 'train')
-    ddp_loss = make_train_loss(model, rank)
+    ddp_loss = make_train_loss(model, r)
     if sampler:
         sampler.set_epoch(epoch)
 
-    for batch_idx, (data, target) in make_pbar(train_loader, rank, enumerate):
-        data, target = data.to(rank), target.to(rank)
+    for batch_idx, (data, target) in make_pbar(train_loader, r, enumerate):
+        data, target = data.to(r), target.to(r)
         optimizer.zero_grad()
         output = model(data)
         loss = F.nll_loss(output, target, reduction='sum')
@@ -450,16 +456,16 @@ def train_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=Non
     ddp_loss[0] = ddp_loss[0] / (batch_idx + 1)
     all_reduce_(ddp_loss, op='sum')
     losses[epoch] = (ddp_loss[0] / ddp_loss[1])
-    print_train_loss(ddp_loss, epoch, rank)
-def train_no_cpu_(model, rank, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None):
+    print_train_loss(ddp_loss, epoch, r)
+def train_no_cpu_(model, r, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None):
    pass
 
-def test(model, rank, test_loader, val_losses, epoch):
+def test(model, r, test_loader, val_losses, epoch):
     set_mode_(model, 'eval')
-    ddp_loss = make_test_loss(model, rank)
+    ddp_loss = make_test_loss(model, r)
     with torch.no_grad():
-      for batch_indx, (data, target) in make_pbar(test_loader, rank, enumerate):
-        data, target = data.to(rank), target.to(rank)
+      for batch_indx, (data, target) in make_pbar(test_loader, r, enumerate):
+        data, target = data.to(r), target.to(r)
         output = model(data)
         ddp_loss[0] += F.nll_loss(output, target, reduction='sum').item()
         pred = output.argmax(dim=1, keepdim=True) 
@@ -469,7 +475,7 @@ def test(model, rank, test_loader, val_losses, epoch):
     ddp_loss[0] = ddp_loss[0] / (batch_indx + 1)
     all_reduce_(ddp_loss, op='sum')
     val_losses[epoch] = (ddp_loss[0] / ddp_loss[2])
-    print_test_loss(ddp_loss, rank)
+    print_test_loss(ddp_loss, r)
 
 def get_sharding_strategy(args):
   return args.sharding
@@ -477,7 +483,7 @@ def get_sharding_strategy(args):
 def compile_model(model):
   return torch.compile(model, mode='max-autotune-no-cudagraphs')
 
-def count_gpus():
+def ct_gpu():
   return torch.cuda.device_count()
 
 def use_orig_params(args):
@@ -504,11 +510,11 @@ def get_prefetch_factor(args):
   else:
     return args.prefetch_factor
 
-def fsdp_main(rank, world_size, args):
-    setup_print_(rank)
-    print(f"starting...")
-    setup_distributed_(rank, world_size)
-    # if is_master(rank):
+def main(r, ws, args):
+    set_prn_(r)
+    prn(f"starting...")
+    su_dist_(r, ws, args.addr, args.port)
+    # if is_master(r):
     #     print("warning: changing matmul precision")
 
 
@@ -517,15 +523,15 @@ def fsdp_main(rank, world_size, args):
     test_data = make_test_data(transform)
 
     if args.use_dist_sampler:
-      train_sampler = make_dist_sampler(train_data, rank, world_size, shuffle=False)
-      test_sampler = make_dist_sampler(test_data, rank, world_size, shuffle=False)
+      train_sampler = make_dist_sampler(train_data, r, ws, shuffle=False)
+      test_sampler = make_dist_sampler(test_data, r, ws, shuffle=False)
     else:
+      if is_master(r):
+        print('warning: not using distributed sampler')
       train_sampler = None
       test_sampler = None
 
-    print(f"num workers: {count_num_workers(args)}")
-    print(f"prefetch_factor: {get_prefetch_factor(args)}")
-    cuda_kwargs = {'num_workers': count_num_workers(args),
+    cuda_kw = {'num_workers': count_num_workers(args),
                     'pin_memory': True,
                     'shuffle': False,
                     'drop_last': True,
@@ -533,75 +539,79 @@ def fsdp_main(rank, world_size, args):
                     'prefetch_factor': get_prefetch_factor(args),
                     }
     train_loader_config = make_loader_config(batch_size=args.batch_size, 
-                                             sampler=train_sampler, **cuda_kwargs)
+                                             sampler=train_sampler, **cuda_kw)
     test_loader_config = make_loader_config(batch_size=args.test_batch_size,
-                                            sampler=test_sampler, **cuda_kwargs)
+                                            sampler=test_sampler, **cuda_kw)
 
     train_loader = make_loader(train_data, **train_loader_config)
     test_loader = make_loader(test_data, **test_loader_config)
-    set_gpu_(rank)
+    set_gpu_(r)
 
     start_event = make_cuda_event()
     end_event = make_cuda_event()
 
-    model = make_model(args.model, rank, use_batchnorm=args.use_batchnorm)
+    model = make_model(args.model, r, use_batchnorm=args.use_batchnorm)
     strat = get_sharding_strategy(args)
-    # model = fsdp(model, auto_wrap_policy=make_wrap_policy(100), 
-    #              use_orig_params=use_orig_params(args), 
-    #             #  mixed_precision=make_mixed_precision(args.mixed),
-    #              sharding_strategy=string_to_sharding_strategy(strat))
-    if world_size > 1:
-      print("using fsdp")
+    if ws > 1:
+      if is_master(r):
+        print("using fsdp")
       model = fsdp(model, auto_wrap_policy=make_wrap_policy(20000), 
+                   sharding_strategy=string_to_sharding_strategy(strat),
                   #  use_orig_params=use_orig_params(args),
                    )
-      # model = DDP(model, device_ids=[rank], output_device=rank)
+      # model = DDP(model, device_ids=[r], output_device=r)
     if use_compile(args):
        model = compile_model(model)
     optimizer = make_optimizer(model, args.lr)
 
-    losses = torch.empty(args.epochs, device=rank)
-    epoch_times = torch.empty(args.epochs, device=rank)
+    losses = torch.empty(args.epochs, device=r)
+    epoch_times = torch.empty(args.epochs, device=r)
     mem = []
 
-    val_losses = torch.empty(args.epochs, device=rank)
+    val_losses = torch.empty(args.epochs, device=r)
     scheduler = make_scheduler(optimizer, step_size=1, gamma=args.gamma)
     record_cuda_event_(start_event)
     for epoch in range(args.epochs):
         t0 = time.time()
-        train_(model, rank, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times, world_size=world_size, mem=mem)
-        test(model, rank, test_loader, val_losses, epoch)
+        train_(model, r, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times, ws=ws, mem=mem)
+        test(model, r, test_loader, val_losses, epoch)
         step_(scheduler)
         _t = time.time() - t0
-        print_epoch(epoch, _t, rank)
+        print_epoch(epoch, _t, r)
         epoch_times[epoch] = _t
     record_cuda_event_(end_event)
 
-    if is_master(rank):
+    if is_master(r):
     # if False:
       print(f"losses: {losses}")
       print(f"val_losses: {val_losses}")
+      print(f"mem: {max(mem)}")
+      print(f"epoch times: {epoch_times[1:]}")
+
+      d = f'plots/{ct_dir('plots')}'
+      os.makedirs(d, exist_ok=True)
+
       plt.plot(losses[1:].cpu().numpy(), label='train')
       plt.plot(val_losses[1:].cpu().numpy(), label='test')
-      # plt.plot(epoch_times.cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/losses_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.png')
+      plt.savefig(f'{d}/{mk_filen("LossesPlot")}.png')
       plt.close()
 
-      print(f"epoch times: {epoch_times[1:]}")
       plt.plot(epoch_times[1:].cpu().numpy(), label='epoch_times')
       plt.legend()
-      plt.savefig(f'plots/epoch_times_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.png')
+      plt.savefig(f'{d}/{mk_filen("EpochTimesPlot")}.png')
       plt.close()
 
-      # save losses to "losses_{world_size}.txt"
-      with open(f'plots/losses_{world_size}_{use_orig_params(args)}_{args.epochs}_sampler{args.use_dist_sampler}.txt', 'w') as f:
+      with open(f'{d}/{mk_filen("Losses")}.txt', 'w') as f:
+        f.write(f'config: \n')
+        for k, v in vars(args).items():
+          f.write(f"{k}: {v}\n")
+        f.write("\n")
         f.write(f"losses:\n")
         for l in losses:
           f.write(f"{l}\n")
         f.write("\n")
         f.write(f"val_losses:\n")
-        # f.write(f"val_losses: {val_losses}\n")
         for l in val_losses:
           f.write(f"{l}\n")
         f.write("\n")
@@ -609,51 +619,67 @@ def fsdp_main(rank, world_size, args):
         for l in epoch_times:
           f.write(f"{l}\n")
         f.write("\n")
-        f.write(f"world_size: {world_size}\n")
+        f.write(f"ws:\n")
+        f.write(f"{ws}\n")
         f.write(f"\n")
         f.write(f"model:\n")
         f.write(f"{model}\n")
         f.write(f"\n")
-        f.write(f"args:\n") 
+        f.write(f"args:\n")
         f.write(f"{args}\n")
-
-    with open(f'plots/mem_{world_size}_{use_orig_params(args)}_{args.epochs}_rank{rank}_sampler{args.use_dist_sampler}.txt', 'w') as f:
-      f.write(f"mem (rank {rank}):\n")
-      for l in mem:
-        f.write(f"{l}\n")
-
-    synchronize_gpus_()
-    print_summary(cuda_elapsed_time(start_event, end_event), 
-                  model, rank)
+        f.write(f"\n")
+        f.write(f"mem:\n")
+        for l in mem:
+          f.write(f"{l}\n")
+          
+    sync_()
+    print_summary(cuda_time(start_event, end_event), 
+                  model, r)
 
     if args.save_model:
-        # use a barrier to make sure training is done on all ranks
-        barrier_distributed_()
-        save_model_(model, rank)
+        # use a barrier to make sure training is done on all rs
+        barrier_()
+        save_model_(model, r)
 
-    cleanup_distributed_()
+    cu_dist_()
 
-def make_args(parser, **kwargs):
+def make_args(parser, **kw):
   return parser.parse_args()
   # return pmap({
-  #   'batch_size': kwargs.get('batch_size', 64),
-  #   'test_batch_size': kwargs.get('test_batch_size', 1000),
-  #   'epochs': kwargs.get('epochs', 10),
-  #   'lr': kwargs.get('lr', 1.0),
-  #   'gamma': kwargs.get('gamma', 0.7),
-  #   'no_cuda': kwargs.get('no_cuda', False),
-  #   'seed': kwargs.get('seed', 1),
-  #   'save_model': kwargs.get('save_model', False),
+  #   'batch_size': kw.get('batch_size', 64),
+  #   'test_batch_size': kw.get('test_batch_size', 1000),
+  #   'epochs': kw.get('epochs', 10),
+  #   'lr': kw.get('lr', 1.0),
+  #   'gamma': kw.get('gamma', 0.7),
+  #   'no_cuda': kw.get('no_cuda', False),
+  #   'seed': kw.get('seed', 1),
+  #   'save_model': kw.get('save_model', False),
   # })
 
-def spawn_processes_(fun, world_size, args):
-    mp.spawn(fun, args=(world_size, args), nprocs=world_size, join=True)
+def spawn_(fun, ws, args):
+    prn('ws (spawn):', ws)
+    mp.spawn(fun, args=(ws, args), nprocs=ws, join=True)
 
-def count_gpus_args(args):
+def ct_gpu_args(args):
   if args.gpus == -1:
-      return count_gpus()
+      return ct_gpu()
   else:
       return args.gpus
+
+def no(s, *c):
+  return reduce(lambda acc, x: acc.replace(x, ''), c, s)
+
+def up(s):
+  return s.upper()
+  
+def mk_filen(nm, **kw):
+  return reduce(lambda acc, x: f"{acc}_{up(no(str(x), '-', '.'))}{kw[x]}", kw, nm)
+
+# TODO
+def sv_cfg(name, **kw):
+  with open(f'configs/{mk_filen(name, **kw)}.txt', 'w') as f:
+    for k, v in kw.items():
+      f.write(f"{k}: {v}\n")
 
 if __name__ == '__main__':
     # Training settings
@@ -691,9 +717,15 @@ if __name__ == '__main__':
     args = make_args(parser)
     set_seed_(args.seed)
 
-    world_size = count_gpus_args(args)
-    print(f'world_size: {world_size}')
-    spawn_processes_(fsdp_main, world_size, args)
+    ws = ct_gpu_args(args)
+    prn(f'ws: {ws}')
+    args.addr = get_free_addr()
+    args.port = get_free_port(args.addr)
+    args.num_workers = count_num_workers(args)
+    args.gpus = ws
+    args.prefetch_factor = get_prefetch_factor(args)
+    prn(args)
+    spawn_(main, ws, args)
 
 
 
@@ -728,3 +760,4 @@ if __name__ == '__main__':
   # [] without distributed sampler
   # [] without sharding
   # [] aggregate plots
+  # [] deep
