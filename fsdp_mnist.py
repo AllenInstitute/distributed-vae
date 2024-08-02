@@ -227,11 +227,11 @@ class DeepNet(nn.Module):
     self.dropout2 = nn.Dropout(0.5)
     self.fc1 = nn.Linear(9216, 9000)
     self.fc1a = nn.Linear(9000, 1000)
-    self.bn1a = nn.BatchNorm1d(1000)
+    # self.bn1a = nn.BatchNorm1d(1000)
     self.fc1b = nn.Linear(1000, 1000)
-    self.bn1b = nn.BatchNorm1d(1000)
+    # self.bn1b = nn.BatchNorm1d(1000)
     self.fc1c = nn.Linear(1000, 1000)
-    self.bn1c = nn.BatchNorm1d(1000)
+    # self.bn1c = nn.BatchNorm1d(1000)
     self.fc1d = nn.Linear(1000, 128)
     self.fc2 = nn.Linear(128, 10)
 
@@ -247,11 +247,11 @@ class DeepNet(nn.Module):
     x = F.relu(x)
     x = self.dropout2(x)
     x = self.fc1a(x)
-    x = self.bn1a(x)
+    # x = self.bn1a(x)
     x = self.fc1b(x)
-    x = self.bn1b(x)
+    # x = self.bn1b(x)
     x = self.fc1c(x)
-    x = self.bn1c(x)
+    # x = self.bn1c(x)
     x = self.fc1d(x)
     x = self.fc2(x)
     output = F.log_softmax(x, dim=1)
@@ -457,6 +457,8 @@ def train_(model, r, train_loader, optimizer, epoch, sampler=None, losses=None, 
     all_reduce_(ddp_loss, op='sum')
     losses[epoch] = (ddp_loss[0] / ddp_loss[1])
     print_train_loss(ddp_loss, epoch, r)
+
+
 def train_no_cpu_(model, r, train_loader, optimizer, epoch, sampler=None, losses=None, epoch_times=None):
    pass
 
@@ -574,8 +576,8 @@ def main(r, ws, args):
     for epoch in range(args.epochs):
         t0 = time.time()
         train_(model, r, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times, ws=ws, mem=mem)
-        test(model, r, test_loader, val_losses, epoch)
-        step_(scheduler)
+        # test(model, r, test_loader, val_losses, epoch)
+        # step_(scheduler)
         _t = time.time() - t0
         print_epoch(epoch, _t, r)
         epoch_times[epoch] = _t

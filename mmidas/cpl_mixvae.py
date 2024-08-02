@@ -1396,6 +1396,8 @@ class cpl_mixVAE:
                c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
                log=None):
 
+        # assert self.device == rank
+
         # define current_time
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
@@ -1513,7 +1515,9 @@ class cpl_mixVAE:
                     for cc in range(self.n_categories):
                         train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / batch_count
 
-                log({'train_recon': train_recon[0, epoch]})
+
+                log({'train/recon': train_recon[0, epoch],
+                     'train/loss': train_loss[epoch],})
 
                 print_train_loss(epoch, train_loss[epoch], train_recon[0, epoch],
                                 train_recon[1, epoch], train_loss_joint[epoch], 

@@ -474,6 +474,7 @@ def fsdp_main(rank, world_size, args):
     if use_fsdp(args):
         print('using fsdp...')
         if use_mixed(args):
+            print('using mixed precision...')
             mp = MixedPrecision(
                 param_dtype=torch.bfloat16,
                 reduce_dtype=torch.bfloat16,
@@ -482,7 +483,7 @@ def fsdp_main(rank, world_size, args):
         else:
             mp = None
         cplMixVAE.model = fsdp(cplMixVAE.model, auto_wrap_policy=make_wrap_policy(20000),
-                            use_orig_params=True, device_id=rank, sharding_strategy=ShardingStrategy.NO_SHARD,
+                            use_orig_params=False, device_id=rank,
                             mixed_precision=mp)
     
     if use_compile(args):
@@ -531,29 +532,32 @@ if __name__ == "__main__":
 
     # Define command line arguments
     parser.add_argument("--n_categories", default=120, type=int, help="(maximum) number of cell types")
+    # 115
+
+
     parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
     parser.add_argument("--n_arm", default=2, type=int, 
                         help="number of mixVAE arms for each modality")
     parser.add_argument("--temp", default=1, type=float, help="gumbel-softmax temperature")
     parser.add_argument("--tau", default=.005, type=float, help="softmax temperature")
-    parser.add_argument("--beta", default=.01, type=float, help="KL regularization parameter")
+    parser.add_argument("--beta", default=.01, type=float, help="KL regularization parameter") # 1
     parser.add_argument("--lam", default=1, type=float, help="coupling factor")
     parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
     parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-    parser.add_argument("--n_epoch", default=10, type=int, help="Number of epochs to train")
-    parser.add_argument("--n_epoch_p", default=10000, type=int, help="Number of epochs to train pruning algorithm")
+    parser.add_argument("--n_epoch", default=20000, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch_p", default=0, type=int, help="Number of epochs to train pruning algorithm")
     parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
-    parser.add_argument("--max_prun_it", default=50, type=int, help="maximum number of pruning iterations")
+    parser.add_argument("--max_prun_it", default=0, type=int, help="maximum number of pruning iterations")
     parser.add_argument("--ref_pc", default=False, type=bool, help="use a reference prior component")
     parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
     parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
     parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
-    parser.add_argument("--augmentation", default=False, action='store_true', help="enable VAE-GAN augmentation")
+    parser.add_argument("--augmentation", default=False, action='store_true', help="enable VAE-GAN augmentation") # pass this in
     parser.add_argument("--load_weights", default=False, action='store_true', help="load previous augmentation weights")
     # parser.add_argument("--augmentation", default=False, type=bool, help="enable VAE-GAN augmentation")
     parser.add_argument("--lr", default=.001, type=float, help="learning rate")
     parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
-    parser.add_argument("--s_drop", default=0.2, type=float, help="state probability of dropout")
+    parser.add_argument("--s_drop", default=0.2, type=float, help="state probability of dropout") # 0
     parser.add_argument("--pretrained_model", default=False, type=bool, help="use pretrained model")
     parser.add_argument("--n_pr", default=0, type=int, help="number of pruned categories in case of using a pretrained model")
     parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
@@ -566,6 +570,7 @@ if __name__ == "__main__":
     parser.add_argument("--compile", action='store_true', default=False, help='torch.compile the model')
     parser.add_argument("--mixed", action="store_true", default=False,
                         help="enable bf16 mixed precision training")
+    parser.add_argument("--world_size", default=1, type=int, help="number of gpus")
 
 
     args = make_args(parser)
@@ -614,3 +619,33 @@ if __name__ == "__main__":
     # [] lscpu for num threads
     # [] add back adist sampler
     # [] 5 horizontal mmidas layers, add noise, then 5 more horizontal mmidas layers?
+
+
+
+# shallow model(B=256, sharding=full, use_dist_sampler)
+    # 1 gpu 
+    # 2 gpu 
+    # [] 3 gpu
+    # [] 4 gpu
+
+# shallow model(B=256, sharding=no, use_dist_sampler)
+    # 1 gpu 
+    # 2 gpu 
+    # [] 3 gpu
+    # [] 4 gpu
+
+# shallow model(B=256, sharding=full, no dist sampler)
+    # 1 gpu 
+    # 2 gpu 
+    # [] 3 gpu
+    # [] 4 gpu
+
+
+
+
+# deep model(B=256, sharding=full, use_dist_sampler)
+    # 1 gpu
+
+
+# deep model(B=256, sharding=full, no_dist_sampler)
+    # 1 gpu
