@@ -18,3 +18,5 @@ traces/
 plots/
 *.png
 *.cpython
+toy-runs/
+mnist-logs/

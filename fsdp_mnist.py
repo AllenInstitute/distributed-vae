@@ -39,6 +39,8 @@ from torchvision import datasets, transforms
 from torch._dynamo import OptimizedModule
 import matplotlib.pyplot as plt
 
+import wandb
+
 from torch_utils import current_gpu, cpu_count, set_gpu_
 
 def prn(*args, **kw):
@@ -107,7 +109,7 @@ def mk_to(s):
 
 def su_pg_(r, ws):
    dist.init_process_group('nccl', rank=r, world_size=ws, 
-                           timeout=mk_to(120))
+                           timeout=mk_to(600))
   
 def cu_pg_():
     dist.destroy_process_group()
@@ -219,7 +221,7 @@ class Net(nn.Module):
     return output
 
 class DeepNet(nn.Module):
-  def __init__(self):
+  def __init__(self, use_batchnorm=False):
     super(DeepNet, self).__init__()
     self.conv1 = nn.Conv2d(1, 32, 3, 1)
     self.conv2 = nn.Conv2d(32, 64, 3, 1)
@@ -227,13 +229,17 @@ class DeepNet(nn.Module):
     self.dropout2 = nn.Dropout(0.5)
     self.fc1 = nn.Linear(9216, 9000)
     self.fc1a = nn.Linear(9000, 1000)
-    # self.bn1a = nn.BatchNorm1d(1000)
     self.fc1b = nn.Linear(1000, 1000)
-    # self.bn1b = nn.BatchNorm1d(1000)
     self.fc1c = nn.Linear(1000, 1000)
-    # self.bn1c = nn.BatchNorm1d(1000)
     self.fc1d = nn.Linear(1000, 128)
     self.fc2 = nn.Linear(128, 10)
+    if not use_batchnorm:
+      print(f'warning: not using batchnorm')
+    else:
+      self.bn1a = nn.BatchNorm1d(1000)
+      self.bn1b = nn.BatchNorm1d(1000)
+      self.bn1c = nn.BatchNorm1d(1000)
+    self.use_batchnorm = use_batchnorm
 
   def forward(self, x):
     x = self.conv1(x)
@@ -247,11 +253,14 @@ class DeepNet(nn.Module):
     x = F.relu(x)
     x = self.dropout2(x)
     x = self.fc1a(x)
-    # x = self.bn1a(x)
+    if self.use_batchnorm:
+      x = self.bn1a(x)
     x = self.fc1b(x)
-    # x = self.bn1b(x)
+    if self.use_batchnorm:
+      x = self.bn1b(x)
     x = self.fc1c(x)
-    # x = self.bn1c(x)
+    if self.use_batchnorm:
+      x = self.bn1c(x)
     x = self.fc1d(x)
     x = self.fc2(x)
     output = F.log_softmax(x, dim=1)
@@ -261,7 +270,7 @@ def make_model(s, r, **kw):
   if s == 'shallow':
     model = Net(use_batchnorm=kw.get('use_batchnorm', False))
   elif s == 'deep':
-    model = DeepNet()
+    model = DeepNet(use_batchnorm=kw.get('use_batchnorm', False))
   else:
     raise ValueError(f"Unknown model: {s}")
   return model.to(r)
@@ -311,11 +320,14 @@ def string_to_sharding_strategy(s):
 
 def make_mixed_precision(p):
   dtype = str2dt(p)
-  return MixedPrecision(
-    param_dtype=dtype,
-    reduce_dtype=dtype,
-    buffer_dtype=dtype
-  )
+  if dtype is None:
+    return None
+  else:
+    return MixedPrecision(
+      param_dtype=dtype,
+      reduce_dtype=dtype,
+      buffer_dtype=dtype
+    )
 
 def make_wrap_policy(params):
   return partial(size_based_auto_wrap_policy, min_num_params=params)
@@ -483,7 +495,7 @@ def get_sharding_strategy(args):
   return args.sharding
 
 def compile_model(model):
-  return torch.compile(model, mode='max-autotune-no-cudagraphs')
+  return torch.compile(model)
 
 def ct_gpu():
   return torch.cuda.device_count()
@@ -555,12 +567,19 @@ def main(r, ws, args):
     model = make_model(args.model, r, use_batchnorm=args.use_batchnorm)
     strat = get_sharding_strategy(args)
     if ws > 1:
-      if is_master(r):
-        print("using fsdp")
-      model = fsdp(model, auto_wrap_policy=make_wrap_policy(20000), 
-                   sharding_strategy=string_to_sharding_strategy(strat),
-                  #  use_orig_params=use_orig_params(args),
-                   )
+      if strat == 'ddp':
+        if is_master(r): 
+          print("using ddp")
+        model = DDP(model, device_ids=[r], output_device=r)
+      else:
+        if is_master(r):
+          print("using fsdp")
+        model = fsdp(model, auto_wrap_policy=make_wrap_policy(20000), 
+                    sharding_strategy=string_to_sharding_strategy(strat),
+                     use_orig_params=args.use_orig_params or args.compile,
+                     sync_module_states=args.sync,
+                     mixed_precision=make_mixed_precision(args.mixed)
+                    )
       # model = DDP(model, device_ids=[r], output_device=r)
     if use_compile(args):
        model = compile_model(model)
@@ -576,13 +595,14 @@ def main(r, ws, args):
     for epoch in range(args.epochs):
         t0 = time.time()
         train_(model, r, train_loader, optimizer, epoch, sampler=train_sampler, losses=losses, epoch_times=epoch_times, ws=ws, mem=mem)
-        # test(model, r, test_loader, val_losses, epoch)
-        # step_(scheduler)
+        test(model, r, test_loader, val_losses, epoch)
+        step_(scheduler)
         _t = time.time() - t0
         print_epoch(epoch, _t, r)
         epoch_times[epoch] = _t
     record_cuda_event_(end_event)
 
+    barrier_()
     if is_master(r):
     # if False:
       print(f"losses: {losses}")
@@ -590,7 +610,8 @@ def main(r, ws, args):
       print(f"mem: {max(mem)}")
       print(f"epoch times: {epoch_times[1:]}")
 
-      d = f'plots/{ct_dir('plots')}'
+      _fldr = 'toy-runs'
+      d = f"{_fldr}/r{ct_dir(_fldr)}"
       os.makedirs(d, exist_ok=True)
 
       plt.plot(losses[1:].cpu().numpy(), label='train')
@@ -604,36 +625,24 @@ def main(r, ws, args):
       plt.savefig(f'{d}/{mk_filen("EpochTimesPlot")}.png')
       plt.close()
 
-      with open(f'{d}/{mk_filen("Losses")}.txt', 'w') as f:
-        f.write(f'config: \n')
-        for k, v in vars(args).items():
-          f.write(f"{k}: {v}\n")
-        f.write("\n")
-        f.write(f"losses:\n")
-        for l in losses:
-          f.write(f"{l}\n")
-        f.write("\n")
-        f.write(f"val_losses:\n")
-        for l in val_losses:
-          f.write(f"{l}\n")
-        f.write("\n")
-        f.write(f"epoch_times:\n")
-        for l in epoch_times:
-          f.write(f"{l}\n")
-        f.write("\n")
-        f.write(f"ws:\n")
-        f.write(f"{ws}\n")
-        f.write(f"\n")
-        f.write(f"model:\n")
-        f.write(f"{model}\n")
-        f.write(f"\n")
-        f.write(f"args:\n")
-        f.write(f"{args}\n")
-        f.write(f"\n")
-        f.write(f"mem:\n")
-        for l in mem:
-          f.write(f"{l}\n")
-          
+      torch.save({
+        'losses': losses,
+        'val_losses': val_losses,
+        'epoch_times': epoch_times,
+        'ws': ws,
+        'args': args,
+        'mem': mem,
+        'mem_summary': max(mem),
+        'str(model)': str(model),
+        'sharding_strat': strat,
+        'prec': args.mixed,
+        'orig': args.use_orig_params,
+        'sync': args.sync,
+        'compile': args.compile
+        # 'gpu': torch.cuda.get_device_name(),
+      }, f'{d}/{mk_filen("Run", model=args.model, b=args.batch_size, work=args.num_workers, E=args.epochs, g=args.gpus, dsamp=args.use_dist_sampler, shard=strat, prec=args.mixed, sync=args.sync, comp=args.compile, orig=args.use_orig_params)}.pt')
+      print(f"saved to {d}")
+
     sync_()
     print_summary(cuda_time(start_event, end_event), 
                   model, r)
@@ -659,7 +668,6 @@ def make_args(parser, **kw):
   # })
 
 def spawn_(fun, ws, args):
-    prn('ws (spawn):', ws)
     mp.spawn(fun, args=(ws, args), nprocs=ws, join=True)
 
 def ct_gpu_args(args):
@@ -706,16 +714,18 @@ if __name__ == '__main__':
                         help='Model to use: shallow, deep')
     parser.add_argument('--compile', action='store_true', default=False,
                         help='Compile the model')
-    parser.add_argument('--mixed', type=str, default='fp32', metavar='M',
+    parser.add_argument('--mixed', type=str, default='none', metavar='M',
                         help='Mixed precision: fp16, bf16, fp32')
     parser.add_argument('--sharding', type=str, default='full', metavar='M',
                         help='Sharding strategy: full, grad-op, no, hybrid, hybrid-zero2')
     parser.add_argument('--gpus', type=int, default=-1)
     parser.add_argument('--use_orig_params',  default=False, action='store_true')
+    parser.add_argument('--sync', default=False, action='store_true')
     parser.add_argument('--num_workers', type=int, default=-1)
     parser.add_argument('--prefetch_factor', type=int, default=-1)
     parser.add_argument('--use_batchnorm', default=False, action='store_true')
     parser.add_argument('--use_dist_sampler', default=False, action='store_true')
+    parser.add_argument('--wandb', default=False, action='store_true')
     args = make_args(parser)
     set_seed_(args.seed)
 

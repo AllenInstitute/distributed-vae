@@ -211,7 +211,8 @@ class cpl_mixVAE:
                 self.device = torch.device('mps')
             else:
                 self.device = torch.device(device)
-                set_gpu_(device)
+                if isinstance(device, int):
+                    set_gpu_(device)
                 print('---> ' + gpu_name(current_gpu()))
 
         if self.aug_file:
@@ -543,26 +544,24 @@ class cpl_mixVAE:
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
             
-            prn('warning: disabling saving')
-            self.save = False
             if self.save and n_epoch > 0:
-                trained_model = self.folder + '/model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
+                print('folder:', self.folder)
+                trained_model = self.folder + f'/model/cpl_mixVAE_model_before_pruning_A{self.n_arm}_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
                 bias = self.model.fcc[0].bias.detach().cpu().numpy()
                 mask = range(len(bias))
                 prune_indx = []
                 # plot the learning curve of the network
                 fig, ax = plt.subplots()
-                ax.plot(range(n_epoch), np.mean(train_recon, axis=0), label='Training')
-                # ax.plot(range(n_epoch), validation_loss, label='Validation')
+                ax.plot(range(n_epoch), train_loss, label='Training')
+                ax.plot(range(n_epoch), validation_loss, label='Validation')
                 ax.set_xlabel('# epoch', fontsize=16)
                 ax.set_ylabel('loss value', fontsize=16)
                 ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(self.state_dim))
                 ax.spines['right'].set_visible(False)
                 ax.spines['top'].set_visible(False)
                 ax.legend()
-                self.folder = ''
-                ax.figure.savefig(self.folder + '/model/learning_curve_before_pruning_K_' + str(self.n_categories) + '_' + self.current_time + '.png')
+                ax.figure.savefig(self.folder + f'/model/learning_curve_before_pruning_K_A{self.n_arm}_' + str(self.n_categories) + '_' + self.current_time + '.png')
                 plt.close("all")
 
         if n_epoch_p > 0:
