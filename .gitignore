@@ -20,3 +20,4 @@ plots/
 *.cpython
 toy-runs/
 mnist-logs/
+mmidas-logs/

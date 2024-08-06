@@ -543,9 +543,25 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+            def save_loss_plot(loss_data, label, filename):
+                fig, ax = plt.subplots()
+                ax.plot(range(n_epoch), loss_data, label=label)
+                ax.set_xlabel('# epoch', fontsize=16)
+                ax.set_ylabel('loss value', fontsize=16)
+                ax.set_title(f'{label} loss of the cpl-mixVAE for K={self.n_categories} and S={self.state_dim}')
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.legend()
+                ax.figure.savefig(self.folder + f'/model/{filename}_A{self.n_arm}_{self.n_categories}_{self.current_time}.png')
+                plt.close()
             
             if self.save and n_epoch > 0:
-                print('folder:', self.folder)
+                # Save train loss plot
+                save_loss_plot(train_loss, 'Training', 'train_loss_curve')
+
+                # Save validation loss plot
+                save_loss_plot(validation_loss, 'Validation', 'validation_loss_curve')
+                
                 trained_model = self.folder + f'/model/cpl_mixVAE_model_before_pruning_A{self.n_arm}_' + self.current_time + '.pth'
                 torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
                 bias = self.model.fcc[0].bias.detach().cpu().numpy()
@@ -1497,9 +1513,13 @@ class cpl_mixVAE:
 
                     for arm in range(self.n_arm):
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+
+                print(f'before reduce: {train_loss_val[0] / train_loss_val[1]}')
                 
                 if is_parallel(world_size):
                     all_reduce_(train_loss_val, op='sum')
+
+                print(f'after reduce: {train_loss_val[0] / train_loss_val[1]}')                
 
                 batch_count = count_batches(train_loader)
                 train_loss[epoch] = train_loss_val[0] / train_loss_val[1]

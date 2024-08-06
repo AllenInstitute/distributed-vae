@@ -96,7 +96,7 @@ def su_env_(a, p):
     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = str(1)
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = str(1)
     if 'a100' in torch.cuda.get_device_name().lower():
-      os.environ['NCCL_P2P_LEVEL'] = 'NVL' # use only for a100's
+      os.environ['NCCL_P2P_LEVEL'] = 'NVL' # new! use only for a100's
       print("warning: changing matmul precision")
       torch.backends.cuda.matmul.allow_tf32 = True
       torch.backends.cudnn.allow_tf32 = True

@@ -15,40 +15,6 @@ def wrap_in_path(x):
     else:
         return wrap_in_path(Path(x))
 
-# Setup argument parser for command line arguments
-parser = argparse.ArgumentParser()
-
-parser.add_argument("--n_arm", default=2, type=int, help="number of mixVAE arms for each modality")
-
-parser.add_argument("--n_categories", default=115, type=int, help="number of cell types")
-parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
-parser.add_argument("--temp",  default=1, type=float, help="gumbel-softmax temperature")
-parser.add_argument("--tau",  default=.005, type=float, help="softmax temperature")
-parser.add_argument("--beta",  default=1, type=float, help="KL regularization parameter")
-parser.add_argument("--lam",  default=1, type=float, help="coupling factor")
-parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-parser.add_argument("--n_epoch", default=20000, type=int, help="Number of epochs to train")
-parser.add_argument("--n_epoch_p", default=0, type=int, help="Number of epochs to train pruning algorithm")
-parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
-parser.add_argument("--max_pron_it", default=0, type=int, help="minimum number of samples in a class")
-parser.add_argument("--n_aug_smp", default=0, type=int, help="number of augmented samples")
-parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
-parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
-parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
-parser.add_argument("--augmentation", default=True, type=bool, help="enable VAE-GAN augmentation")
-parser.add_argument("--lr", default=.001, type=float, help="learning rate")
-parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
-parser.add_argument("--s_drop", default=0.0, type=float, help="state probability of dropout")
-parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
-parser.add_argument("--ref_pc", default=False, type=bool, help="use a reference prior component")
-parser.add_argument("--pretrained_model", default=False, type=bool, help="use pretrained model")
-parser.add_argument("--n_pr", default=0, type=int, help="number of pruned categories in case of using a pretrained model")
-parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
-parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
-parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
-parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
-parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
-
 
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
@@ -60,7 +26,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     # Load configuration paths
     toml_file = 'pyproject.toml'
     config = get_paths(toml_file=toml_file, sub_file=dataset)
-    data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])
+    data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])   
 
     # Define folder name for saving results
     folder_name = f'run_{n_run}_K_{n_categories}_Sdim_{state_dim}_aug_{augmentation}_lr_{lr}_n_arm_{n_arm}_nbatch_{batch_size}' + \
@@ -138,5 +104,38 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
+    # Setup argument parser for command line arguments
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--n_arm", default=2, type=int, help="number of mixVAE arms for each modality")
+
+    parser.add_argument("--n_categories", default=115, type=int, help="number of cell types")
+    parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
+    parser.add_argument("--temp",  default=1, type=float, help="gumbel-softmax temperature")
+    parser.add_argument("--tau",  default=.005, type=float, help="softmax temperature")
+    parser.add_argument("--beta",  default=1, type=float, help="KL regularization parameter")
+    parser.add_argument("--lam",  default=1, type=float, help="coupling factor")
+    parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
+    parser.add_argument("--n_epoch", default=20000, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch_p", default=0, type=int, help="Number of epochs to train pruning algorithm")
+    parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
+    parser.add_argument("--max_prun_it", default=0, type=int, help="minimum number of samples in a class")
+    parser.add_argument("--fc_dim", default=100, type=int, help="number of nodes at the hidden layers")
+    parser.add_argument("--batch_size", default=5000, type=int, help="batch size")
+    parser.add_argument("--variational", default=True, type=bool, help="enable variational mode")
+    parser.add_argument("--augmentation", default=True, type=bool, help="enable VAE-GAN augmentation")
+    parser.add_argument("--lr", default=.001, type=float, help="learning rate")
+    parser.add_argument("--p_drop", default=0.5, type=float, help="input probability of dropout")
+    parser.add_argument("--s_drop", default=0.0, type=float, help="state probability of dropout")
+    parser.add_argument("--lam_pc", default=1, type=float, help="coupling factor for ref arm")
+    parser.add_argument("--ref_pc", default=False, type=bool, help="use a reference prior component")
+    parser.add_argument("--pretrained_model", default=False, type=bool, help="use pretrained model")
+    parser.add_argument("--n_pr", default=0, type=int, help="number of pruned categories in case of using a pretrained model")
+    parser.add_argument("--loss_mode", default='MSE', type=str, help="loss mode, MSE or ZINB")
+    parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
+    parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
+    parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
+    parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
+
     args = parser.parse_args()
     main(**vars(args))

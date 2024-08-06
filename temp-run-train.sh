@@ -5,9 +5,9 @@
 #SBATCH --mem=32G
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
-#SBATCH -e mmmidas-logs/mmmidas_%j.err
+#SBATCH -e mmidas-logs/mmidas_%j.err
+#SBATCH --time=24:00:00
 
-source /home/hilal.mufti/miniforge3/etc/profile.d/conda.sh
-/home/hilal.mufti/miniforge3/bin/mamba activate mdist-mmidas
+source activate mdist-mmidas
 
-python train.py --n_arms 1 --n_epoch 3
+python train.py --n_arm 10

@@ -60,9 +60,9 @@ cat << EOF > temp-run-mnist.sh
 #SBATCH -p celltypes
 #SBATCH -o mnist-logs/mnist_%j.out
 #SBATCH -e mnist-logs/mnist_%j.err
+#SBATCH --time=00:30:00
 
-source /home/hilal.mufti/miniforge3/etc/profile.d/conda.sh
-/home/hilal.mufti/miniforge3/bin/mamba activate mdist-mmidas
+source activate mdist-mmidas
 
 python fsdp_mnist.py --epochs $EPOCHS --batch-size $BATCH_SIZE --model $MODEL --gpus $GPUS --num_workers 4 --sharding $STRAT $DIST_SAMPLER_ARG $BATCHNORM_ARG $ORIG_PARAMS_ARG $SYNC_ARG $COMPILE_ARG --mixed $MIXED
 EOF
