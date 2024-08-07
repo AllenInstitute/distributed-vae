@@ -24,5 +24,5 @@ cat << EOF > $FILE
 
 source activate mdist-mmidas
 
-python ../train.py --n_arm $ARMS --use-wandb
+python train.py --n_arm $ARMS --use-wandb
 EOF
