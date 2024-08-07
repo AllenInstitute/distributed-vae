@@ -10,11 +10,7 @@ def is_path(x):
     return isinstance(x, Path)
 
 def wrap_in_path(x):
-    if is_path(x):
-        return x
-    else:
-        return wrap_in_path(Path(x))
-
+    return wrap_in_path(Path(x)) if not is_path(x) else x
 
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,

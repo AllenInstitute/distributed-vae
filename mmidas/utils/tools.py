@@ -3,8 +3,10 @@ import scipy.io as sio
 import toml
 import requests
 from pathlib import Path
+from functools import lru_cache
 from sklearn.preprocessing import normalize
 
+@lru_cache(maxsize=None)
 def get_paths(toml_file, sub_file='files', verbose=False):
     """Loads dictionary with path names and any other variables set through xxx.toml
 
