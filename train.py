@@ -16,7 +16,7 @@ def wrap_in_path(x):
 
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
-         p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset):
+         p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset, use_wandb):
 
     _args = locals()
     # try int(device):
@@ -89,7 +89,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                          mode=loss_mode)
 
     # Train and save the model
-    run = wandb.init(project='mmidas-arms', config=_args)
+    run = wandb.init(project='mmidas-arms', config=_args) if wandb else None
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -135,6 +135,7 @@ if __name__ == "__main__":
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
     parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
+    parser.add_argument("--use-wandb", default=True, action='store_true', help="use wandb for logging")
 
     args = parser.parse_args()
     main(**vars(args))
