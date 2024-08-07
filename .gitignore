@@ -6,9 +6,10 @@ __pycache__/
 data/
 lightning_logs/
 **/__pycache__/
-model/
 pl-mnist/
 wandb/
+model/
+mmidas-results/
 results/
 .vscode
 smartseq_augmenter/

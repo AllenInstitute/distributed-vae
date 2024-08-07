@@ -352,6 +352,12 @@ def make_loader_config(**kw):
 def make_loader(data, **config):
     return torch.utils.data.DataLoader(data, **config)
 
+
+# train_loader = DataLoader(data,
+#                           use_persistent_workers=True,
+#                           sampler=DistributedSampler(...),
+#                           ...)
+
 def is_shallow_net(model):
   return isinstance(module(model), Net)
 

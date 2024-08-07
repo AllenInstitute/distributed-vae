@@ -1,12 +1,13 @@
 import os
 import re
-from functools import lru_cache
+from functools import lru_cache, reduce as red
+from itertools import accumulate as acc
 from collections import defaultdict, OrderedDict
 
 import torch as T
 import numpy as np
 import matplotlib.pyplot as plt
-from pyrsistent import pmap
+from pyrsistent import pmap, v
 from plot_config import *
 
 def some(f, xs):
@@ -156,8 +157,13 @@ def find_runs(config, run_dir='toy-runs', log_dir='mnist-logs'):
                   filter(is_run, lazy_listdir(run_dir)))
 
 
-def plot(*metrics, dirn, style='line', title=None, save=None, drop_first=2,
+def plot(*metrics, dirn='toy-runs', style='line', title=None, save=None, drop_first=2,
          scale=1, ylabel=None, **kw):
-    assert all(is_config(v) for v in kw.values())
-
+    _kw = acc(map(lambda x: map(lambda r: (r, x[0]), x[1]),
+                  map(lambda x: (x[0], find_runs(x[1])), kw.items())),
+              lambda acc, x: red(lambda bcc, y: bcc.append(y), x, acc),
+              initial=v())
+    _plot(*metrics, dirn=dirn, style=style, title=title, save=save,
+          drop_first=drop_first, scale=scale, ylabel=ylabel, 
+          **dict(list(_kw)[-1]))
 # list(find_runs(TWO_GPUS_SHALLOW_FULL.set('use_dist_sampler', 'False')))

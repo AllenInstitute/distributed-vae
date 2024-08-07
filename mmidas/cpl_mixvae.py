@@ -481,9 +481,9 @@ class cpl_mixVAE:
                         train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / (batch_indx + 1)
 
                 print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '
-                      'Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
+                      'Entropy: {:.4f}, Distance: {:.4f}, Min. Var: {:.6f}, Elapsed Time:{:.2f}, '.format(
                     epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
-                    train_entropy[epoch], train_distance[epoch], time.time() - t0))
+                    train_entropy[epoch], train_distance[epoch], train_minVar[epoch], time.time() - t0))
 
                 # validation
                 self.model.eval()
