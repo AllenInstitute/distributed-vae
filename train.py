@@ -27,9 +27,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     # Define folder name for saving results
     folder_name = f'run_{n_run}_K_{n_categories}_Sdim_{state_dim}_aug_{augmentation}_lr_{lr}_n_arm_{n_arm}_nbatch_{batch_size}' + \
                   f'_train_nepoch_{n_epoch}_nepochP_{n_epoch_p}'
-    saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path']
-    saving_folder = saving_folder / folder_name
-    saving_folder = Path('mmidas-results')
+    saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path'] / folder_name
     os.makedirs(saving_folder, exist_ok=True)
     os.makedirs(saving_folder / 'model', exist_ok=True)
     saving_folder = str(saving_folder)

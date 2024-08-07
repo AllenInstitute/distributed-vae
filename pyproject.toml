@@ -23,7 +23,7 @@ anndata_file = "Mouse_ALM-VISp_cpm.h5ad"
 htree_file = "tree_Mouse_ALM-VISp_2018.csv"
 ref_gene_file = "genes_SS_ALM-VISp.csv"
 data_path = "data/"
-saving_path = "mmidas-results/model/"
+saving_path = "mmidas-results/"
 aug_model = "smartseq_augmenter/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
 trained_model = "run1_A2"
 
