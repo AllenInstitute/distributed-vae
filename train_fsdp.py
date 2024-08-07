@@ -6,6 +6,7 @@ from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
 from pathlib import Path
 
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import wandb
 
 def is_path(x):
@@ -31,8 +32,8 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     folder_name = f'Run{n_run}_K{n_categories}_S{state_dim}_AUG{augmentation}_LR{lr}_A{n_arm}_B{batch_size}' + \
                   f'_E{n_epoch}_Ep{n_epoch_p}'
     saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path'] / folder_name
-    os.makedirs(saving_folder, exist_ok=True)
-    os.makedirs(saving_folder / 'model', exist_ok=True)
+    # os.makedirs(saving_folder, exist_ok=True)
+    # os.makedirs(saving_folder / 'model', exist_ok=True)
     saving_folder = str(saving_folder)
     
 
@@ -88,6 +89,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                          n_pr=n_pr,
                          mode=loss_mode)
 
+    cplMixVAE.model = FSDP(cplMixVAE.model, process_group='nccl')
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
     model_file = cplMixVAE.train(train_loader=train_loader,
