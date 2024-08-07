@@ -89,7 +89,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                          mode=loss_mode)
 
     # Train and save the model
-    run = wandb.init(project='mmidas-arms', config=_args) if wandb else None
+    run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
     parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
-    parser.add_argument("--use-wandb", default=True, action='store_true', help="use wandb for logging")
+    parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
 
     args = parser.parse_args()
     main(**vars(args))
