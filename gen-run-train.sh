@@ -9,6 +9,8 @@ ARMS=$1
 GPU=$2
 FILE="train-scripts/run-train-A$ARMS-$GPU.sh"
 
+
+
 cat << EOF > $FILE
 #!/bin/bash
 #SBATCH -N1
@@ -22,5 +24,5 @@ cat << EOF > $FILE
 
 source activate mdist-mmidas
 
-python train.py --n_arm $ARMS
+python train.py --n_arm $ARMS --use-wandb
 EOF

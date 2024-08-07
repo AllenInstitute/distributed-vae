@@ -10,4 +10,4 @@
 
 source activate mdist-mmidas
 
-python train.py --n_arm 2
+python train.py --n_arm 2 --use-wandb
