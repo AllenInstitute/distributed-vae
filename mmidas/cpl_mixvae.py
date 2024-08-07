@@ -480,11 +480,23 @@ class cpl_mixVAE:
                     for cc in range(self.n_categories):
                         train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / (batch_indx + 1)
 
+                _time = time.time() - t0
                 print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '
                       'Entropy: {:.4f}, Distance: {:.4f}, Min. Var: {:.6f}, Elapsed Time:{:.2f}, '.format(
                     epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
-                    train_entropy[epoch], train_distance[epoch], train_minVar[epoch], time.time() - t0))
-
+                    train_entropy[epoch], train_distance[epoch], train_minVar[epoch], _time))
+                
+                if run:
+                    run.log({
+                        'train/total-loss': train_loss[epoch],
+                        'train/joint-loss': train_loss_joint[epoch],
+                        'train/entropy': train_entropy[epoch],
+                        'train/distance': train_distance[epoch],
+                        'train/min-var': train_minVar[epoch],
+                        'train/time': _time,
+                        **dict(map(lambda x: (f'train/rec-loss{x}', train_recon[x, epoch]), range(self.n_arm))),
+                    })
+                    
                 # validation
                 self.model.eval()
                 with torch.no_grad():
@@ -539,6 +551,11 @@ class cpl_mixVAE:
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
                 print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
+                if run:
+                    run.log({
+                        'val/total-loss': validation_loss[epoch],
+                        'val/rec-loss': validation_rec_loss[epoch]
+                    })
 
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'

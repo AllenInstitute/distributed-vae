@@ -6,6 +6,8 @@ from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
 from pathlib import Path
 
+import wandb
+
 def is_path(x):
     return isinstance(x, Path)
 
@@ -16,6 +18,7 @@ def wrap_in_path(x):
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
          p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset):
 
+    _args = locals()
     # try int(device):
 
 
@@ -25,8 +28,8 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])   
 
     # Define folder name for saving results
-    folder_name = f'run_{n_run}_K_{n_categories}_Sdim_{state_dim}_aug_{augmentation}_lr_{lr}_n_arm_{n_arm}_nbatch_{batch_size}' + \
-                  f'_train_nepoch_{n_epoch}_nepochP_{n_epoch_p}'
+    folder_name = f'Run{n_run}_K{n_categories}_S{state_dim}_AUG{augmentation}_LR{lr}_A{n_arm}_B{batch_size}' + \
+                  f'_E{n_epoch}_Ep{n_epoch_p}'
     saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path'] / folder_name
     os.makedirs(saving_folder, exist_ok=True)
     os.makedirs(saving_folder / 'model', exist_ok=True)
@@ -86,6 +89,7 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                          mode=loss_mode)
 
     # Train and save the model
+    run = wandb.init(project='mmidas-arms', config=_args)
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -93,7 +97,8 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                                  c_onehot=data_dict['c_onehot'],
                                  c_p=data_dict['c_p'],
                                  min_con=min_con,
-                                 max_prun_it=max_prun_it)
+                                 max_prun_it=max_prun_it,
+                                 run=run)
 
 
 # Run the main function when the script is executed

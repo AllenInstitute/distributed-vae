@@ -7,8 +7,9 @@ fi
 
 ARMS=$1
 GPU=$2
+FILE="train-scripts/run-train-A$ARMS-$GPU.sh"
 
-cat << EOF > temp-run-train.sh
+cat << EOF > $FILE
 #!/bin/bash
 #SBATCH -N1
 #SBATCH --gpus=$GPU:1
@@ -23,5 +24,3 @@ source activate mdist-mmidas
 
 python train.py --n_arm $ARMS
 EOF
-
-sbatch temp-run-train.sh
