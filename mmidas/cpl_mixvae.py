@@ -438,9 +438,6 @@ class cpl_mixVAE:
 
                     trans_data = []
                     for arm in range(self.n_arm):
-                        trans_data.append(self.netA(data))
-
-                        
                         trans_data.append(self.augment(self.netA, data) if self.aug_file else data)
 
                     if self.ref_prior:
