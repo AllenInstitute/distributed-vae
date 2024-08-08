@@ -167,6 +167,7 @@ dependencies:
       - psutil==6.0.0
       - ptyprocess==0.7.0
       - pure-eval==0.2.3
+      - py-spy==0.3.14
       - pyarrow==17.0.0
       - pygments==2.18.0
       - pynndescent==0.5.13
