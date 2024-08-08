@@ -40,15 +40,15 @@ dependencies:
   - pyrsistent=0.20.0=py312h80987f9_0
   - pysocks=1.7.1=py312hca03da5_0
   - python=3.12.4=h99e199e_1
-  - pytorch=2.3.1=py3.12_0
+  - pytorch=2.4.0=py3.12_0
   - pyyaml=6.0.1=py312h80987f9_0
   - readline=8.2=h1a28f6b_0
   - setuptools=69.5.1=py312hca03da5_0
   - sqlite=3.45.3=h80987f9_0
   - sympy=1.12=py312hca03da5_0
   - tk=8.6.14=h6ba3021_0
-  - torchaudio=2.3.1=py312_cpu
-  - torchvision=0.18.1=py312_cpu
+  - torchaudio=2.4.0=py312_cpu
+  - torchvision=0.19.0=py312_cpu
   - tqdm=4.66.4=py312h989b03a_0
   - typing_extensions=4.11.0=py312hca03da5_0
   - urllib3=2.2.2=py312hca03da5_0
@@ -144,6 +144,7 @@ dependencies:
       - psutil==6.0.0
       - ptyprocess==0.7.0
       - pure-eval==0.2.2
+      - py-spy==0.3.14
       - pyarrow==16.1.0
       - pycparser==2.22
       - pygments==2.18.0
