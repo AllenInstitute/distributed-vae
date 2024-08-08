@@ -20,7 +20,7 @@ def test_on(device):
     def batch_forward(model, x, num_passes):
         batch = x.repeat(num_passes, 1)
         with T.no_grad():
-            ret = model(batch)
+            return model(batch)
 
     def vmap_forward(model, x, num_passes):
         batched_model = T.vmap(model)

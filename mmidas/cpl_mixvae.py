@@ -418,6 +418,7 @@ class cpl_mixVAE:
 
         if self.init:
             print("Start training ...")
+            aug_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = 0
                 train_jointloss_val = 0
@@ -436,10 +437,13 @@ class cpl_mixVAE:
                         
                     tt = time.time() 
                     
-                    # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)]
-                    trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
-                    # trans_data = self.netA(_x)[1] if self.aug_file else _x
-
+                    ta0 = time.time()
+                    trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
+                    # trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1) # (A, B, d)
+                    # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
+                    aug_time.append(time.time() - ta0)
+                    
+                    
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
@@ -556,6 +560,8 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
+            print('aug time:', np.mean(aug_time))
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
                 ax.plot(range(n_epoch), loss_data, label=label)

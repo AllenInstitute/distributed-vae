@@ -201,6 +201,13 @@ class Augmenter_smartseq(nn.Module):
     
     def forward(self, x, batched):
         if batched:
+
+            # (B, d)
+
+            # (A, B, d)
+
+            # (A * B, d)
+
             z = torch.randn(x.shape[0], x.shape[1], self.noise_dim, device=x.device)
             z = F.elu(self.bnz(self.noise(z).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc1(self.fc1(self.dp(x)).permute(1, 2, 0))).permute(2, 0, 1)
