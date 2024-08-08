@@ -284,7 +284,7 @@ class mixVAE_model(nn.Module):
         return
             -(log(-log(U))) (tensor)
         """
-        U = torch.rand(shape).to(self.device)
+        U = torch.rand(shape, device=self.device)
 
         return -Variable(torch.log(-torch.log(U + self.eps) + self.eps))
 
