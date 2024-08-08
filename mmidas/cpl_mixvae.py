@@ -3,6 +3,7 @@ import pickle
 import random
 import time
 from functools import reduce
+from itertools import cycle, repeat
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,15 +17,14 @@ import torch.optim as optim
 from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
-from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
-                                    StateDictType)
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    BackwardPrefetch, CPUOffload)
-from torch.distributed.fsdp.wrap import (enable_wrap,
-                                         size_based_auto_wrap_policy, wrap)
-from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
+# from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
+#                                     StateDictType)
+# from torch.distributed.fsdp.fully_sharded_data_parallel import (
+#     BackwardPrefetch, CPUOffload)
+# from torch.distributed.fsdp.wrap import (enable_wrap,
+#                                          size_based_auto_wrap_policy, wrap)
+# from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, TensorDataset
@@ -37,6 +37,8 @@ from .augmentation.udagan import *
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
+
+T = torch
 
 def prn(*args, **kwargs):
     print(*args, **kwargs)
@@ -220,6 +222,7 @@ class cpl_mixVAE:
             self.aug_param = self.aug_model['parameters']
             
             if load_weights:
+                print('loadng weights...')
                 self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
                                 input_dim=self.aug_param['n_features'])
@@ -363,6 +366,8 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
+    def augment(self, augmenter, x):
+        return augmenter(x, T.randn(x.shape[0], self.aug_param['num_n'], device=self.device), True, self.device)[1]
 
     def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None):
         """
@@ -429,21 +434,11 @@ class cpl_mixVAE:
                     data = data.to(self.device)
                     d_idx = d_idx.to(int)
                         
-                    trans_data = []
                     tt = time.time()
+
+                    trans_data = []
                     for arm in range(self.n_arm):
-                        if self.aug_file:
-                            noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            _, gen_data = self.netA(data, noise, True, self.device)
-                            # if self.aug_param['n_zim'] > 1:
-                            #     data_bin = 0. * data
-                            #     data_bin[data > self.eps] = 1.
-                            #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                            #     trans_data.append(fake_data)
-                            # else:
-                            trans_data.append(gen_data)
-                        else:
-                            trans_data.append(data)
+                        trans_data.append(self.augment(self.netA, data) if self.aug_file else data)
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
@@ -498,58 +493,58 @@ class cpl_mixVAE:
                     })
                     
                 # validation
-                self.model.eval()
-                with torch.no_grad():
-                    val_loss_rec = 0.
-                    val_loss = 0.
-                    if test_loader.batch_size > 1:
-                        for batch_indx, (data_val, d_idx), in enumerate(test_loader):
-                            data_val = data_val.to(self.device)
-                            d_idx = d_idx.to(int)
-                            trans_val_data = []
-                            for arm in range(self.n_arm):
-                               trans_val_data.append(data_val)
+                # self.model.eval()
+                # with torch.no_grad():
+                #     val_loss_rec = 0.
+                #     val_loss = 0.
+                #     if test_loader.batch_size > 1:
+                #         for batch_indx, (data_val, d_idx), in enumerate(test_loader):
+                #             data_val = data_val.to(self.device)
+                #             d_idx = d_idx.to(int)
+                #             trans_val_data = []
+                #             for arm in range(self.n_arm):
+                #                trans_val_data.append(data_val)
 
-                            if self.ref_prior:
-                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
-                            else:
-                                c_bin = 0.
-                                prior_c = 0.
+                #             if self.ref_prior:
+                #                 c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                #                 prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                #             else:
+                #                 c_bin = 0.
+                #                 prior_c = 0.
 
-                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c, eval=True)
-                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data, mu, log_var, qc, c, c_bin)
-                            val_loss += loss.data.item()
-                            for arm in range(self.n_arm):
-                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
-                    else:
-                        batch_indx = 0
-                        data_val, d_idx = test_loader.dataset.tensors
-                        data_val = data_val.to(self.device)
-                        d_idx = d_idx.to(int)
-                        trans_val_data = []
-                        for arm in range(self.n_arm):
-                            trans_val_data.append(data_val)
+                #             recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c, eval=True)
+                #             loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data, mu, log_var, qc, c, c_bin)
+                #             val_loss += loss.data.item()
+                #             for arm in range(self.n_arm):
+                #                 val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                #     else:
+                #         batch_indx = 0
+                #         data_val, d_idx = test_loader.dataset.tensors
+                #         data_val = data_val.to(self.device)
+                #         d_idx = d_idx.to(int)
+                #         trans_val_data = []
+                #         for arm in range(self.n_arm):
+                #             trans_val_data.append(data_val)
 
-                        if self.ref_prior:
-                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                            prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
-                        else:
-                            c_bin = 0.
-                            prior_c = 0.
+                #         if self.ref_prior:
+                #             c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                #             prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                #         else:
+                #             c_bin = 0.
+                #             prior_c = 0.
 
-                        recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data,
-                                                                                            temp=self.temp,
-                                                                                            prior_c=prior_c, eval=True)
-                        loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x,
-                                                                                       trans_val_data, mu, log_var, qc,
-                                                                                       c, c_bin)
-                        val_loss = loss.data.item()
-                        for arm in range(self.n_arm):
-                            val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                #         recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data,
+                #                                                                             temp=self.temp,
+                #                                                                             prior_c=prior_c, eval=True)
+                #         loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x,
+                #                                                                        trans_val_data, mu, log_var, qc,
+                #                                                                        c, c_bin)
+                #         val_loss = loss.data.item()
+                #         for arm in range(self.n_arm):
+                #             val_loss_rec += loss_rec[arm].data.item() / self.input_dim
 
-                validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
-                validation_loss[epoch] = val_loss / (batch_indx + 1)
+                # validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                # validation_loss[epoch] = val_loss / (batch_indx + 1)
                 print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(validation_loss[epoch], validation_rec_loss[epoch]))
                 if run:
                     run.log({

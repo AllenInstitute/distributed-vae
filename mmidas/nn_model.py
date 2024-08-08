@@ -174,8 +174,10 @@ class mixVAE_model(nn.Module):
         qc, alr_qc = [None] * self.n_arm, [None] * self.n_arm
         x_low, log_qc = [None] * self.n_arm, [None] * self.n_arm
 
-        for arm in range(self.n_arm):
-            x_low[arm], log_qc[arm] = self.encoder(x[arm], arm)
+        # for arm in range(self.n_arm):
+        # for arm in range(self.n_arm):
+        for arm, x_ in enumerate(x):
+            x_low[arm], log_qc[arm] = self.encoder(x_, arm)
 
             if mask is not None:
                 qc_tmp = F.softmax(log_qc[arm][:, mask] / self.tau, dim=-1)
@@ -368,15 +370,15 @@ class mixVAE_model(nn.Module):
         batch_size, n_cat = c[0].size()
         neg_joint_entropy, z_distance_rep, z_distance, dist_a = [], [], [], []
 
-        for arm_a in range(self.n_arm):
-            loglikelihood[arm_a] = F.mse_loss(recon_x[arm_a], x[arm_a], reduction='mean') + x[arm_a].size(0) * np.log(2 * np.pi)
+        for arm_a, x_ in enumerate(x):
+            loglikelihood[arm_a] = F.mse_loss(recon_x[arm_a], x_, reduction='mean') + x_.size(0) * np.log(2 * np.pi)
             if self.loss_mode == 'MSE':
-                l_rec[arm_a] = 0.5 * F.mse_loss(recon_x[arm_a], x[arm_a], reduction='sum') / (x[arm_a].size(0))
+                l_rec[arm_a] = 0.5 * F.mse_loss(recon_x[arm_a], x_, reduction='sum') / (x_.size(0))
                 rec_bin = torch.where(recon_x[arm_a] > 0.1, 1., 0.)
-                x_bin = torch.where(x[arm_a] > 0.1, 1., 0.)
+                x_bin = torch.where(x_ > 0.1, 1., 0.)
                 l_rec[arm_a] += 0.5 * F.binary_cross_entropy(rec_bin, x_bin)
             elif self.loss_mode == 'ZINB':
-                l_rec[arm_a] = zinb_loss(recon_x[arm_a], p_x[arm_a], r_x[arm_a], x[arm_a])
+                l_rec[arm_a] = zinb_loss(recon_x[arm_a], p_x[arm_a], r_x[arm_a], x_)
 
             if self.varitional:
                 KLD_cont[arm_a] = (-0.5 * torch.mean(1 + log_sigma[arm_a] - mu[arm_a].pow(2) - log_sigma[arm_a].exp(), dim=0)).sum()
