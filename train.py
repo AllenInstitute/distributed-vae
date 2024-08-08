@@ -139,3 +139,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(**vars(args))
+
+# TODO:
+    # [] fix torch.compile for mps
