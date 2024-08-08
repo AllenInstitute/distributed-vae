@@ -58,7 +58,8 @@ def reparam_trick(mu, std, device):
         a sample from Gaussian distribution N(mu, sigma^2*I).
     """
     
-    eps = torch.FloatTensor(std.size()).normal_().to(device)
+    # eps = torch.FloatTensor(std.size()).normal_().to(device)
+    eps = torch.randn_like(std, device=device)
     # if mu.device.type == "cuda":
     #     # eps = torch.cuda.FloatTensor(std.size(), device=device).normal_()
         
