@@ -134,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
-    parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
+    parser.add_argument("--device", default='cpu', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
 
     args = parser.parse_args()

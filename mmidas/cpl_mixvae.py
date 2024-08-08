@@ -232,7 +232,7 @@ class cpl_mixVAE:
                 self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
                                       latent_dim=self.aug_param['num_z'],
                                       input_dim=self.aug_param['n_features'])
-            self.netA = self.netA.to(self.device)
+            self.netA = self.netA.to(self.device).eval()
 
     def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False):
         self.batch_size = batch_size
@@ -439,7 +439,9 @@ class cpl_mixVAE:
                     
                     ta0 = time.time()
                     # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
-                    trans_data = list(self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1))
+                    # with torch.no_grad():
+                    trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                    # print(trans_data2[0].dtype, trans_data[0].dtype)
                     # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
                     aug_time.append(time.time() - ta0)
                     
