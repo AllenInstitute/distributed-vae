@@ -436,9 +436,11 @@ class cpl_mixVAE:
                         
                     tt = time.time()
 
-                    trans_data = []
-                    for arm in range(self.n_arm):
-                        trans_data.append(self.augment(self.netA, data) if self.aug_file else data)
+                    # trans_data = []
+                    # for arm in range(self.n_arm):
+                    #     trans_data.append(self.augment(self.netA, data) if self.aug_file else data)
+                    
+                    trans_data = [self.augment(self.netA, data) if self.aug_file else data for _ in range(self.n_arm)]
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
