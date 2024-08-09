@@ -340,6 +340,9 @@ class cpl_mixVAE:
                                 ref_prior=ref_prior, momentum=momentum, loss_mode=mode)
         
         self.model = self.model.to(self.device)
+    
+
+
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         if len(trained_model) > 0:

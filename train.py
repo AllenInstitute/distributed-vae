@@ -109,6 +109,8 @@ def main(r, ws, args):
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
     cplMixVAE.model = fs.fsdp(cplMixVAE.model, auto_wrap_policy=fs.make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
+    cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=lr)
+
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -118,6 +120,8 @@ def main(r, ws, args):
                                  min_con=min_con,
                                  max_prun_it=max_prun_it,
                                  run=run, ws=ws, rank=r)
+
+
     if ws > 1:
         fs.cu_dist_()
 
@@ -155,7 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
-    parser.add_argument("--device", default='mps', type=str, help="computing device, either 'cpu' or 'cuda'.")
+    parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
     parser.add_argument('--gpus', type=int, default=-1)
     parser.add_argument('--use_orig_params', default=False, action='store_true')
@@ -166,7 +170,7 @@ if __name__ == "__main__":
     
     ws = fs.ct_gpu_args(args)
     fs.prn(f'ws: {ws}')
-    if ws > 0:
+    if ws > 1:
         args.addr = fs.get_free_addr()
         args.port = fs.get_free_port(args.addr)
         args.num_workers = fs.count_num_workers(args)
