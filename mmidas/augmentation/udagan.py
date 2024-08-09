@@ -200,9 +200,9 @@ class Augmenter_smartseq(nn.Module):
         self.fc11 = nn.Linear(self.fc10.out_features, input_dim)
 
     
-    def forward(self, x, batched):
+    def forward(self, x, batched, scale=1.):
         if batched:
-            z = torch.randn(x.shape[0], x.shape[1], self.noise_dim, device=x.device, requires_grad=False)
+            z = scale * torch.randn(x.shape[0], x.shape[1], self.noise_dim, device=x.device, requires_grad=False)
             z = F.elu(self.bnz(self.noise(z).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc1(self.fc1(self.dp(x)).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc2(self.fc2(x).permute(1, 2, 0))).permute(2, 0, 1)
@@ -219,7 +219,7 @@ class Augmenter_smartseq(nn.Module):
             x = F.relu(self.batch_fc9(self.fc9(x).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc10(self.fc10(x).permute(1, 2, 0))).permute(2, 0, 1)
         else:
-            z = torch.randn(x.shape[0], self.noise_dim, device=x.device, requires_grad=False)
+            z = scale * torch.randn(x.shape[0], self.noise_dim, device=x.device, requires_grad=False)
             z = F.elu(self.bnz(self.noise(z)))
             x = F.relu(self.batch_fc1(self.fc1(self.dp(x))))
             x = F.relu(self.batch_fc2(self.fc2(x)))
