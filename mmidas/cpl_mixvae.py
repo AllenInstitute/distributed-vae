@@ -438,9 +438,10 @@ class cpl_mixVAE:
                     tt = time.time() 
                     
                     ta0 = time.time()
-                    # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
-                    # with torch.no_grad():
-                    trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                    
+                    with torch.no_grad():
+                        #   trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
+                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
                     # print(trans_data2[0].dtype, trans_data[0].dtype)
                     # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
                     aug_time.append(time.time() - ta0)
