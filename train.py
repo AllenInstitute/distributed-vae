@@ -20,22 +20,13 @@ def wrap_in_path(x):
 
 # Main function
 def main(r, ws, args):
-    
-    for k in vars(args):
-        locals()[k] = vars(args)[k]
-    
+    globals().update(vars(args))
 
     seed = 546
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
-
-
-        
-    _args = locals()
-    # try int(device):
-
 
     # Load configuration paths
     toml_file = 'pyproject.toml'
@@ -70,7 +61,7 @@ def main(r, ws, args):
 
     # Initialize the coupled mixVAE (MMIDAS) model
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
-                                 device=device,
+                                 device=r,
                                  aug_file=aug_file)
 
     # Make data loaders for training, validation, and testing
@@ -106,6 +97,7 @@ def main(r, ws, args):
 
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
+    cplMixVAE.model = fsdp(cplMixVAE.model, make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -159,14 +151,17 @@ if __name__ == "__main__":
     args = make_args(parser)
     
     ws = ct_gpu_args(args)
-    prn(f'ws: {args.ws}')
-    args.addr = get_free_addr()
-    args.port = get_free_port(args.addr)
-    args.num_workers = count_num_workers(args)
-    args.gpus = ws
-    args.prefetch_factor = get_prefetch_factor(args)
-    prn(args)
-    spawn_(main, ws, args)
+    prn(f'ws: {ws}')
+    if ws > 0:
+        args.addr = get_free_addr()
+        args.port = get_free_port(args.addr)
+        args.num_workers = count_num_workers(args)
+        args.gpus = ws
+        args.prefetch_factor = get_prefetch_factor(args)
+        prn(args)
+        spawn_(main, ws, args)
+    else:
+        main(args.device, 1, args)
 
 # TODO:
     # [] fix torch.compile for mps
