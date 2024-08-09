@@ -151,3 +151,4 @@ if __name__ == "__main__":
 
 # TODO:
     # [] fix torch.compile for mps
+    # [] check reparam_trick()

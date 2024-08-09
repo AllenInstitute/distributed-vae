@@ -44,6 +44,9 @@ def TripletLoss(anchor, positive, negative, margin=0.2, loss='BCE'):
 
     return losses.mean()
 
+def narange(*dims, device='mps', requires_grad=False):
+    return torch.arange(torch.prod(torch.tensor(dims)), device=device, requires_grad=requires_grad, dtype=torch.float32).reshape(*dims)
+
 
 def reparam_trick(mu, std, device):
     """
@@ -58,11 +61,5 @@ def reparam_trick(mu, std, device):
         a sample from Gaussian distribution N(mu, sigma^2*I).
     """
     
-    # eps = torch.FloatTensor(std.size()).normal_().to(device)
     eps = torch.randn_like(std, device=device)
-    # if mu.device.type == "cuda":
-    #     # eps = torch.cuda.FloatTensor(std.size(), device=device).normal_()
-        
-    # else:
-    #      eps = torch.FloatTensor(std.size()).normal_()
     return eps.mul(std).add(mu)
