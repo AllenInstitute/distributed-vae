@@ -421,6 +421,7 @@ class cpl_mixVAE:
         if self.init:
             print("Start training ...")
             aug_time = []
+            epoch_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = 0
                 train_jointloss_val = 0
@@ -443,9 +444,11 @@ class cpl_mixVAE:
                     with torch.no_grad():
                         # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
                         trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
-                    # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
+                        # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
                     aug_time.append(time.time() - ta0)
                     
+                    # aug time: 0.004298800230026245
+                    # epoch time: 0.8935419583320617
                     
 
                     if self.ref_prior:
@@ -550,6 +553,7 @@ class cpl_mixVAE:
                         val_loss = loss.data.item()
                         for arm in range(self.n_arm):
                             val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                        
 
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
@@ -564,7 +568,10 @@ class cpl_mixVAE:
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
 
+                epoch_time.append(time.time() - t0)
+
             print('aug time:', np.mean(aug_time))
+            print('epoch time:', np.mean(epoch_time))
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
                 ax.plot(range(n_epoch), loss_data, label=label)
