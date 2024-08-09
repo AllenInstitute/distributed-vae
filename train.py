@@ -1,7 +1,8 @@
 import argparse
 import os
 import numpy as np
-import torch
+import signal
+import torch as th
 import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import wandb
 
-from fsdp_mnist import *
+import fsdp_mnist as fs
 
 def is_path(x):
     return isinstance(x, Path)
@@ -18,12 +19,19 @@ def is_path(x):
 def wrap_in_path(x):
     return wrap_in_path(Path(x)) if not is_path(x) else x
 
+signal.signal(signal.SIGINT, lambda _, __: fs.cu_dist_())
+
 # Main function
 def main(r, ws, args):
     globals().update(vars(args))
 
+    if ws > 1:
+        fs.set_prn_(r)
+        fs.su_dist_(r, ws, addr, port)
+        fs.set_gpu_(r)
+
     seed = 546
-    torch.manual_seed(seed)
+    th.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -71,7 +79,10 @@ def main(r, ws, args):
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
                                                                                              fold=fold,
-                                                                                             deterministic=True)
+                                                                                             deterministic=True,
+                                                                                             world_size=ws,
+                                                                                             use_dist_sampler=use_dist_sampler,
+                                                                                             rank=r)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,
@@ -97,7 +108,7 @@ def main(r, ws, args):
 
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
-    cplMixVAE.model = fsdp(cplMixVAE.model, make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
+    cplMixVAE.model = fs.fsdp(cplMixVAE.model, auto_wrap_policy=fs.make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -106,7 +117,9 @@ def main(r, ws, args):
                                  c_p=data_dict['c_p'],
                                  min_con=min_con,
                                  max_prun_it=max_prun_it,
-                                 run=run)
+                                 run=run, ws=ws, rank=r)
+    if ws > 1:
+        fs.cu_dist_()
 
 
 # Run the main function when the script is executed
@@ -148,21 +161,22 @@ if __name__ == "__main__":
     parser.add_argument('--use_orig_params', default=False, action='store_true')
     parser.add_argument('--num_workers', type=int, default=-1)
     parser.add_argument('--use_dist_sampler', default=False, action='store_true')
-    args = make_args(parser)
+    parser.add_argument('--prefetch_factor', type=int, default=-1)
+    args = fs.make_args(parser)
     
-    ws = ct_gpu_args(args)
-    prn(f'ws: {ws}')
+    ws = fs.ct_gpu_args(args)
+    fs.prn(f'ws: {ws}')
     if ws > 0:
-        args.addr = get_free_addr()
-        args.port = get_free_port(args.addr)
-        args.num_workers = count_num_workers(args)
+        args.addr = fs.get_free_addr()
+        args.port = fs.get_free_port(args.addr)
+        args.num_workers = fs.count_num_workers(args)
         args.gpus = ws
-        args.prefetch_factor = get_prefetch_factor(args)
-        prn(args)
-        spawn_(main, ws, args)
+        args.prefetch_factor = fs.get_prefetch_factor(args)
+        fs.prn(args)
+        fs.spawn_(main, ws, args)
     else:
         main(args.device, 1, args)
 
 # TODO:
-    # [] fix torch.compile for mps
+    # [] fix th.compile for mps
     # [] check reparam_trick()
