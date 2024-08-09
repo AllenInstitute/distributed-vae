@@ -17,14 +17,6 @@ import torch.optim as optim
 from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
-# from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
-# from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
-#                                     StateDictType)
-# from torch.distributed.fsdp.fully_sharded_data_parallel import (
-#     BackwardPrefetch, CPUOffload)
-# from torch.distributed.fsdp.wrap import (enable_wrap,
-#                                          size_based_auto_wrap_policy, wrap)
-# from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, TensorDataset
@@ -420,7 +412,6 @@ class cpl_mixVAE:
 
         if self.init:
             print("Start training ...")
-            aug_time = []
             epoch_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = 0
@@ -439,17 +430,9 @@ class cpl_mixVAE:
                     d_idx = d_idx.to(int)
                         
                     tt = time.time() 
-                    
-                    ta0 = time.time()
+                
                     with torch.no_grad():
-                        # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
                         trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
-                        # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
-                    aug_time.append(time.time() - ta0)
-                    
-                    # aug time: 0.004298800230026245
-                    # epoch time: 0.8935419583320617
-                    
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
@@ -570,7 +553,6 @@ class cpl_mixVAE:
 
                 epoch_time.append(time.time() - t0)
 
-            print('aug time:', np.mean(aug_time))
             print('epoch time:', np.mean(epoch_time))
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()

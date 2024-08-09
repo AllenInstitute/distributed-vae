@@ -23,7 +23,6 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.use_deterministic_algorithms(True)
     os.environ['PYTHONHASHSEED'] = str(seed)
         
     _args = locals()
