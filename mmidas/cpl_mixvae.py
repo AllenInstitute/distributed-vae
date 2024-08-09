@@ -426,6 +426,9 @@ class cpl_mixVAE:
                 train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
                 self.model.train()
 
+                train_zcat = [[] for _ in range(self.n_arm)]
+                va_zcat = []
+
                 for batch_indx, (data, d_idx), in enumerate(train_loader):
                     data = data.to(self.device)
                     d_idx = d_idx.to(int)
@@ -433,7 +436,7 @@ class cpl_mixVAE:
                     tt = time.time() 
                 
                     with torch.no_grad():
-                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), True, 0.1)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
@@ -444,6 +447,9 @@ class cpl_mixVAE:
 
                     self.optimizer.zero_grad()
                     recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
+                    for arm in range(self.n_arm):
+                        train_zcat[arm].append(qc[arm].cpu().data.view(qc[arm].size()[0], self.n_categories).argmax(dim=1).detach().numpy())
+
                     loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
                         self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
                     loss.backward()
@@ -558,6 +564,45 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
+                    
+                    predicted_label = np.zeros((self.n_arm, len(train_zcat[0] * self.batch_size)))
+                    for arm in range(self.n_arm):
+                        predicted_label[arm] = np.concatenate(train_zcat[arm])
+
+                    # confusion matrix code            
+                    c_agreement = []
+                    for arm_a in range(self.n_arm):
+                        pred_a = predicted_label[arm_a, :]
+                        for arm_b in range(arm_a + 1, self.n_arm):
+                            pred_b = predicted_label[arm_b, :]
+                            armA_vs_armB = np.zeros((self.n_categories, self.n_categories))
+
+                            for samp in range(pred_a.shape[0]):
+                                armA_vs_armB[pred_a[samp].astype(int), pred_b[samp].astype(int)] += 1
+
+                            num_samp_arm = []
+                            for ij in range(self.n_categories):
+                                sum_row = armA_vs_armB[ij, :].sum()
+                                sum_column = armA_vs_armB[:, ij].sum()
+                                num_samp_arm.append(max(sum_row, sum_column))
+
+                            armA_vs_armB = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
+                                                    where=np.array(num_samp_arm) != 0)
+                            c_agreement.append(np.diag(armA_vs_armB))
+                            ind_sort = np.argsort(c_agreement[-1])
+                            plt.figure()
+                            plt.imshow(armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap='binary')
+                            plt.colorbar()
+                            plt.xlabel('arm_' + str(arm_a), fontsize=20)
+                            plt.xticks(range(self.n_categories), range(self.n_categories))
+                            plt.yticks(range(self.n_categories), range(self.n_categories))
+                            plt.ylabel('arm_' + str(arm_b), fontsize=20)
+                            plt.xticks([])
+                            plt.yticks([])
+                            plt.title('|c|=' + str(self.n_categories), fontsize=20)
+                            plt.savefig(self.folder + '/consensus_arm_' + str(arm_a) + '_arm_' + str(arm_b) + '_epoch_' + str(epoch) + '.png', dpi=600)
+                            plt.close("all")
 
                 epoch_time.append(time.time() - t0)
 
