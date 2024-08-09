@@ -3,6 +3,7 @@ import pickle
 import random
 import time
 from functools import reduce
+from itertools import cycle, repeat
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,15 +17,6 @@ import torch.optim as optim
 from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
-from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
-                                    StateDictType)
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    BackwardPrefetch, CPUOffload)
-from torch.distributed.fsdp.wrap import (enable_wrap,
-                                         size_based_auto_wrap_policy, wrap)
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, TensorDataset
@@ -37,6 +29,8 @@ from .augmentation.udagan import *
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
+
+T = torch
 
 def prn(*args, **kwargs):
     print(*args, **kwargs)
@@ -172,8 +166,10 @@ def profile_data_loading(loader, epochs, rank):
                             'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
             print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
 
-def count_workers_():
-    if hasattr(os, 'sched_getaffinity'):
+def count_workers_(deterministic=False):
+    if deterministic:
+        return 1
+    elif hasattr(os, 'sched_getaffinity'):
         return len(os.sched_getaffinity(0))
     else:
         return os.cpu_count()
@@ -220,6 +216,7 @@ class cpl_mixVAE:
             self.aug_param = self.aug_model['parameters']
             
             if load_weights:
+                print('loadng weights...')
                 self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
                                 input_dim=self.aug_param['n_features'])
@@ -229,9 +226,9 @@ class cpl_mixVAE:
                 self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
                                       latent_dim=self.aug_param['num_z'],
                                       input_dim=self.aug_param['n_features'])
-            self.netA = self.netA.to(self.device)
+            self.netA = self.netA.to(self.device).eval()
 
-    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False):
+    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
         self.batch_size = batch_size
 
 
@@ -266,12 +263,12 @@ class cpl_mixVAE:
             train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, 
-                                      persistent_workers=True, num_workers=count_workers_(),
+                                      persistent_workers=True, num_workers=count_workers_(deterministic),
                                       sampler=train_sampler)
         else:
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, persistent_workers=True,
-                                      num_workers=count_workers_())
+                                      num_workers=count_workers_(deterministic))
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
@@ -285,12 +282,12 @@ class cpl_mixVAE:
         if world_size > 1 and use_dist_sampler:
             print('using distributed sampler...')
             test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(),
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(deterministic),
                                     sampler=test_sampler)
         else:
             test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
                                      pin_memory=True, persistent_workers=True,
-                                     num_workers=count_workers_())
+                                     num_workers=count_workers_(deterministic))
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
@@ -363,6 +360,8 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
+    def augment(self, augmenter, x):
+        return augmenter(x, self.noise)[1]
 
     def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None):
         """
@@ -413,6 +412,7 @@ class cpl_mixVAE:
 
         if self.init:
             print("Start training ...")
+            epoch_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = 0
                 train_jointloss_val = 0
@@ -429,21 +429,10 @@ class cpl_mixVAE:
                     data = data.to(self.device)
                     d_idx = d_idx.to(int)
                         
-                    trans_data = []
-                    tt = time.time()
-                    for arm in range(self.n_arm):
-                        if self.aug_file:
-                            noise = torch.randn(batch_size, self.aug_param['num_n'], device=self.device)
-                            _, gen_data = self.netA(data, noise, True, self.device)
-                            # if self.aug_param['n_zim'] > 1:
-                            #     data_bin = 0. * data
-                            #     data_bin[data > self.eps] = 1.
-                            #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                            #     trans_data.append(fake_data)
-                            # else:
-                            trans_data.append(gen_data)
-                        else:
-                            trans_data.append(data)
+                    tt = time.time() 
+                
+                    with torch.no_grad():
+                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
                     if self.ref_prior:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
@@ -547,6 +536,7 @@ class cpl_mixVAE:
                         val_loss = loss.data.item()
                         for arm in range(self.n_arm):
                             val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                        
 
                 validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
                 validation_loss[epoch] = val_loss / (batch_indx + 1)
@@ -560,6 +550,10 @@ class cpl_mixVAE:
                 if self.save and (epoch > 0) and (epoch % 1000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
+                epoch_time.append(time.time() - t0)
+
+            print('epoch time:', np.mean(epoch_time))
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
                 ax.plot(range(n_epoch), loss_data, label=label)

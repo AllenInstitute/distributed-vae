@@ -1,6 +1,8 @@
 import argparse
 import os
 import numpy as np
+import torch
+import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
@@ -17,7 +19,12 @@ def wrap_in_path(x):
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
          p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset, use_wandb):
-
+    seed = 546
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+        
     _args = locals()
     # try int(device):
 
@@ -64,7 +71,8 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                                                                                              label=data_dict['cluster'],
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
-                                                                                             fold=fold)
+                                                                                             fold=fold,
+                                                                                             deterministic=True)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,
@@ -134,8 +142,12 @@ if __name__ == "__main__":
     parser.add_argument("--n_run", default=1, type=int, help="number of the experiment")
     parser.add_argument("--hard", default=False, type=bool, help="hard encoding")
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
-    parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
+    parser.add_argument("--device", default='cpu', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
 
     args = parser.parse_args()
     main(**vars(args))
+
+# TODO:
+    # [] fix torch.compile for mps
+    # [] check reparam_trick()
