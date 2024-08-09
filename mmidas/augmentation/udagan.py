@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmidas.augmentation.aug_utils import *
 
-
+def narange(*dims, device='mps', requires_grad=False):
+    return torch.arange(torch.prod(torch.tensor(dims)), device=device, requires_grad=requires_grad, dtype=torch.float32).reshape(*dims)
 
 class Augmenter(nn.Module):
     def __init__(self, noise_dim, latent_dim, input_dim=5000, n_dim=100, n_zim=1, p_drop=0.2):
@@ -201,7 +202,8 @@ class Augmenter_smartseq(nn.Module):
     
     def forward(self, x, batched):
         if batched:
-            z = torch.randn(x.shape[0], x.shape[1], self.noise_dim, device=x.device, requires_grad=False)
+            # z = torch.randn(x.shape[0], x.shape[1], self.noise_dim, device=x.device, requires_grad=False)
+            z = narange(x.shape[0], x.shape[1], self.noise_dim, device=x.device, requires_grad=False)
             z = F.elu(self.bnz(self.noise(z).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc1(self.fc1(self.dp(x)).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc2(self.fc2(x).permute(1, 2, 0))).permute(2, 0, 1)
@@ -212,13 +214,15 @@ class Augmenter_smartseq(nn.Module):
             mu = self.batch_fc_mu(self.fc_mu(x).permute(1, 2, 0)).permute(2, 0, 1)
             sigma = torch.sigmoid(self.fc_sigma(x))
             s = reparam_trick(mu, sigma, mu.device)
+            # s = torch.ones_like(s)
             x = F.relu(self.batch_fc6(self.fc6(s).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc7(self.fc7(x).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc8(self.fc8(x).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc9(self.fc9(x).permute(1, 2, 0))).permute(2, 0, 1)
             x = F.relu(self.batch_fc10(self.fc10(x).permute(1, 2, 0))).permute(2, 0, 1)
         else:
-            z = torch.randn(x.shape[0], self.noise_dim, device=x.device, requires_grad=False)
+            # z = torch.randn(x.shape[0], self.noise_dim, device=x.device, requires_grad=False)
+            z = narange(x.shape[0], self.noise_dim, device=x.device, requires_grad=False)
             z = F.elu(self.bnz(self.noise(z)))
             x = F.relu(self.batch_fc1(self.fc1(self.dp(x))))
             x = F.relu(self.batch_fc2(self.fc2(x)))
@@ -229,11 +233,11 @@ class Augmenter_smartseq(nn.Module):
             mu = self.batch_fc_mu(self.fc_mu(x))
             sigma = torch.sigmoid(self.fc_sigma(x))
             s = reparam_trick(mu, sigma, mu.device)
+            # s = torch.ones_like(s)
             x = F.relu(self.batch_fc6(self.fc6(s)))
             x = F.relu(self.batch_fc7(self.fc7(x)))
             x = F.relu(self.batch_fc8(self.fc8(x)))
             x = F.relu(self.batch_fc9(self.fc9(x)))
             x = F.relu(self.batch_fc10(self.fc10(x)))
-        assert s.grad_fn is None and x.grad_fn is None
         return s, F.relu(self.fc11(x))
 

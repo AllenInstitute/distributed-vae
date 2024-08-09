@@ -1,6 +1,8 @@
 import argparse
 import os
 import numpy as np
+import torch
+import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
@@ -17,7 +19,13 @@ def wrap_in_path(x):
 # Main function
 def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
          p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset, use_wandb):
-
+    seed = 546
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.use_deterministic_algorithms(True)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+        
     _args = locals()
     # try int(device):
 
@@ -64,7 +72,8 @@ def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p,
                                                                                              label=data_dict['cluster'],
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
-                                                                                             fold=fold)
+                                                                                             fold=fold,
+                                                                                             deterministic=True)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,

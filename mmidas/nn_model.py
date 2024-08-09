@@ -174,6 +174,8 @@ class mixVAE_model(nn.Module):
         qc, alr_qc = [None] * self.n_arm, [None] * self.n_arm
         x_low, log_qc = [None] * self.n_arm, [None] * self.n_arm
 
+
+
         for arm in range(self.n_arm):
             x_ = x[arm]
             x_low[arm], log_qc[arm] = self.encoder(x_, arm)

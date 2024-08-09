@@ -174,8 +174,10 @@ def profile_data_loading(loader, epochs, rank):
                             'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
             print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
 
-def count_workers_():
-    if hasattr(os, 'sched_getaffinity'):
+def count_workers_(deterministic=False):
+    if deterministic:
+        return 1
+    elif hasattr(os, 'sched_getaffinity'):
         return len(os.sched_getaffinity(0))
     else:
         return os.cpu_count()
@@ -234,7 +236,7 @@ class cpl_mixVAE:
                                       input_dim=self.aug_param['n_features'])
             self.netA = self.netA.to(self.device).eval()
 
-    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False):
+    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
         self.batch_size = batch_size
 
 
@@ -269,12 +271,12 @@ class cpl_mixVAE:
             train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, 
-                                      persistent_workers=True, num_workers=count_workers_(),
+                                      persistent_workers=True, num_workers=count_workers_(deterministic),
                                       sampler=train_sampler)
         else:
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, persistent_workers=True,
-                                      num_workers=count_workers_())
+                                      num_workers=count_workers_(deterministic))
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
@@ -288,12 +290,12 @@ class cpl_mixVAE:
         if world_size > 1 and use_dist_sampler:
             print('using distributed sampler...')
             test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(),
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(deterministic),
                                     sampler=test_sampler)
         else:
             test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
                                      pin_memory=True, persistent_workers=True,
-                                     num_workers=count_workers_())
+                                     num_workers=count_workers_(deterministic))
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
@@ -440,8 +442,11 @@ class cpl_mixVAE:
                     ta0 = time.time()
                     
                     with torch.no_grad():
-                        #   trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
+                        # trans_data = [self.netA(data, False)[1] if self.aug_file else data for _ in range(self.n_arm)] # (B, d)
                         trans_data = self.netA(data.expand(self.n_arm, -1, -1), True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+
+                        print(T.flatten(trans_data[0])[:3], T.flatten(trans_data[1])[:3])
+                        assert False
                     # print(trans_data2[0].dtype, trans_data[0].dtype)
                     # trans_data = (self.netA(data.repeat(self.n_arm, 1), False)[1] if self.aug_file else data.repeat(self.n_arm, 1, 1)).view(self.n_arm, batch_size, self.input_dim) # (A * B, d)
                     aug_time.append(time.time() - ta0)
