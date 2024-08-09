@@ -10,6 +10,8 @@ from pathlib import Path
 
 import wandb
 
+from fsdp_mnist import *
+
 def is_path(x):
     return isinstance(x, Path)
 
@@ -17,13 +19,19 @@ def wrap_in_path(x):
     return wrap_in_path(Path(x)) if not is_path(x) else x
 
 # Main function
-def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
-         p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset, use_wandb):
+def main(r, ws, args):
+    
+    for k in vars(args):
+        locals()[k] = vars(args)[k]
+    
+
     seed = 546
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
+
+
         
     _args = locals()
     # try int(device):
@@ -144,9 +152,21 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
     parser.add_argument("--device", default='cpu', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
-
-    args = parser.parse_args()
-    main(**vars(args))
+    parser.add_argument('--gpus', type=int, default=-1)
+    parser.add_argument('--use_orig_params', default=False, action='store_true')
+    parser.add_argument('--num_workers', type=int, default=-1)
+    parser.add_argument('--use_dist_sampler', default=False, action='store_true')
+    args = make_args(parser)
+    
+    ws = ct_gpu_args(args)
+    prn(f'ws: {args.ws}')
+    args.addr = get_free_addr()
+    args.port = get_free_port(args.addr)
+    args.num_workers = count_num_workers(args)
+    args.gpus = ws
+    args.prefetch_factor = get_prefetch_factor(args)
+    prn(args)
+    spawn_(main, ws, args)
 
 # TODO:
     # [] fix torch.compile for mps

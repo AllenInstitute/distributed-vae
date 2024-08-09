@@ -483,8 +483,7 @@ def fsdp_main(rank, world_size, args):
         else:
             mp = None
         cplMixVAE.model = fsdp(cplMixVAE.model, auto_wrap_policy=make_wrap_policy(20000),
-                            use_orig_params=False, device_id=rank,
-                            mixed_precision=mp)
+                            use_orig_params=False)
     
     if use_compile(args):
         print('compiling model...')
