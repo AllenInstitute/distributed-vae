@@ -419,18 +419,17 @@ class cpl_mixVAE:
             epoch_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = th.zeros(2, device=rank)
-                train_jointloss_val = 0
-                train_dqc = 0
-                log_dqc = 0
-                entr = 0
-                var_min = 0
+                train_jointloss_val = th.zeros(1, device=rank)
+                train_dqc = th.zeros(1, device=rank)
+                log_dqc = th.zeros(1, device=rank)
+                entr = th.zeros(1, device=rank)
+                var_min = th.zeros(1, device=rank)
                 t0 = time.time()
-                train_loss_rec = np.zeros(self.n_arm)
-                train_KLD_cont = np.zeros((self.n_arm, self.n_categories))
+                train_loss_rec = th.zeros(self.n_arm, device=rank)
+                train_KLD_cont = th.zeros(self.n_arm, self.n_categories, device=rank)
                 self.model.train()
 
                 train_zcat = [[] for _ in range(self.n_arm)]
-                va_zcat = []
 
                 for batch_indx, (data, d_idx), in enumerate(train_loader):
                     data = data.to(self.device)
@@ -442,8 +441,8 @@ class cpl_mixVAE:
                         trans_data = self.netA(data.expand(self.n_arm, -1, -1), True, 0.1)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
                     if self.ref_prior:
-                        c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                        prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                        c_bin = torch.Tensor(c_onehot[d_idx, :]).to(self.device)
+                        prior_c = torch.Tensor(c_p[d_idx, :]).to(self.device)
                     else:
                         c_bin = 0.
                         prior_c = 0.
@@ -460,8 +459,6 @@ class cpl_mixVAE:
 
                     train_loss_val[0] += loss.data.item()
                     train_loss_val[1] += 1
-
-                    # train_loss_val += loss.data.item()
                     train_jointloss_val += loss_joint
                     train_dqc += d_qc
                     log_dqc += dist_c
