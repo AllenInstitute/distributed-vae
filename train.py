@@ -84,26 +84,19 @@ def main(r, ws, args):
     cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
                                  device=r,
                                  aug_file=aug_file,
-                                 load_weights=False)
+                                 load_weights=True)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
-    train_loader, test_loader, alldata_loader = get_loaders(dataset=data_dict['log1p'],
-                                                            seed = seed,
-                                                            batch_size=batch_size,
-                                                            world_size=ws,
-                                                            rank=r,
-                                                            use_dist_sampler=use_dist_sampler)
-
-    # alldata_loader, train_loader, validation_loader, test_loader = cplMixVAE.get_dataloader(dataset=data_dict['log1p'],
-    #                                                                                          label=data_dict['cluster'],
-    #                                                                                          batch_size=batch_size,
-    #                                                                                          n_aug_smp=0,
-    #                                                                                          fold=fold,
-    #                                                                                          deterministic=False,
-    #                                                                                          world_size=ws,
-    #                                                                                          use_dist_sampler=use_dist_sampler,
-    #                                                                                          rank=r)
+    alldata_loader, train_loader, validation_loader, test_loader = cplMixVAE.get_dataloader(dataset=data_dict['log1p'],
+                                                                                             label=data_dict['cluster'],
+                                                                                             batch_size=batch_size,
+                                                                                             n_aug_smp=0,
+                                                                                             fold=fold,
+                                                                                             deterministic=True,
+                                                                                             world_size=ws,
+                                                                                             use_dist_sampler=use_dist_sampler,
+                                                                                             rank=r)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,
