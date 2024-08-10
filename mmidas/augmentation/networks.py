@@ -78,7 +78,7 @@ class Augmenter(nn.Module):
             x = F.relu(self.batch_fc3(self.fc3(x)))
             x = F.relu(self.batch_fc4(self.fc4(x)))
             if noise:
-                z = scale * th.randn(x.size(0), self.noise_dim, device=device)
+                z = scale * th.randn(x.size(0), self.noise_dim, device=x.device)
                 z = F.elu(self.bnz(self.noise(z)))
                 x = th.cat((x, z), dim=1)
                 x = F.relu(self.batch_fc5n(self.fc5n(x)))
