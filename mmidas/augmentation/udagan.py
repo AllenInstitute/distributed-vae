@@ -3,9 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmidas.augmentation.aug_utils import *
 
-def narange(*dims, device='mps', requires_grad=False):
-    return torch.arange(torch.prod(torch.tensor(dims)), device=device, requires_grad=requires_grad, dtype=torch.float32).reshape(*dims)
-
 class Augmenter(nn.Module):
     def __init__(self, noise_dim, latent_dim, input_dim=5000, n_dim=100, n_zim=1, p_drop=0.2):
         super().__init__()
@@ -172,8 +169,6 @@ class Augmenter_smartseq(nn.Module):
         self.fc4 = nn.Linear(n_dim, n_dim)
         self.batch_fc4 = nn.BatchNorm1d(num_features=self.fc4.out_features,
                                         eps=1e-10, momentum=moment, affine=False)
-        # self.fc5_ = nn.Linear(n_dim, n_dim // 5)
-        # self.batch_fc5_ = nn.BatchNorm1d(num_features=self.fc5_.out_features, eps=1e-10, momentum=moment, affine=False)
         self.fc5 = nn.Linear(n_dim + noise_dim, n_dim // 5)
         self.batch_fc5 = nn.BatchNorm1d(num_features=self.fc5.out_features,
                                         eps=1e-10, momentum=moment, affine=False)

@@ -25,7 +25,7 @@ from torchvision import datasets, transforms
 from tqdm import tqdm, trange
 import wandb
 
-from .augmentation.udagan import *
+from .augmentation.networks import Augmenter, Augmenter_smartseq
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
@@ -396,11 +396,11 @@ class cpl_mixVAE:
         train_recon = np.zeros((self.n_arm, n_epoch))
         train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch))
         validation_rec_loss = np.zeros(n_epoch)
-        bias_mask = torch.ones(self.n_categories)
-        weight_mask = torch.ones((self.n_categories, self.lowD_dim))
-        fc_mu = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
-        fc_sigma = torch.ones((self.state_dim, self.n_categories + self.lowD_dim))
-        f6_mask = torch.ones((self.lowD_dim, self.state_dim + self.n_categories))
+        bias_mask = th.ones(self.n_categories)
+        weight_mask = th.ones((self.n_categories, self.lowD_dim))
+        fc_mu = th.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        fc_sigma = th.ones((self.state_dim, self.n_categories + self.lowD_dim))
+        f6_mask = th.ones((self.lowD_dim, self.state_dim + self.n_categories))
 
         bias_mask = bias_mask.to(self.device)
         weight_mask = weight_mask.to(self.device)
@@ -410,7 +410,7 @@ class cpl_mixVAE:
         batch_size = train_loader.batch_size
 
         if self.init:
-            print("Start training ...")
+            print("training...")
             epoch_time = []
             for epoch in trange(n_epoch):
                 train_loss_val = th.zeros(2, device=rank)
@@ -433,7 +433,7 @@ class cpl_mixVAE:
                     tt = time.time() 
                 
                     with torch.no_grad():
-                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), batched=True, scale=0.1)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), batched=True, scale=0.1, noise=True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
                     if self.ref_prior:
                         c_bin = torch.Tensor(c_onehot[d_idx, :]).to(self.device)

@@ -71,7 +71,7 @@ def main(r, ws, args):
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
                                  device=r,
                                  aug_file=aug_file,
-                                 load_weights=False)
+                                 load_weights=True)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
@@ -80,7 +80,7 @@ def main(r, ws, args):
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
                                                                                              fold=fold,
-                                                                                             deterministic=False,
+                                                                                             deterministic=True,
                                                                                              world_size=ws,
                                                                                              use_dist_sampler=use_dist_sampler,
                                                                                              rank=r)
