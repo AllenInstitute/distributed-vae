@@ -70,7 +70,8 @@ def main(r, ws, args):
     # Initialize the coupled mixVAE (MMIDAS) model
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
                                  device=r,
-                                 aug_file=aug_file)
+                                 aug_file=aug_file,
+                                 load_weights=False)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
