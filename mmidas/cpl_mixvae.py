@@ -468,18 +468,30 @@ class cpl_mixVAE:
                     for arm in range(self.n_arm):
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
 
+                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Distance: {:.4f}, '.format(
+                    epoch, train_loss_val[0].data.item() / (batch_indx + 1), train_loss_rec[0].data.item() / (batch_indx + 1), train_loss_rec[1].data.item() / (batch_indx + 1), 
+                     train_dqc.data.item() / (batch_indx + 1)))
+
                 if ws > 1:
                     dist.all_reduce(train_loss_val, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(train_dqc, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(train_loss_rec, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(train_jointloss_val, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(log_dqc, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(entr, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(log_dqc, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(var_min, op=dist.ReduceOp.SUM)
 
                 train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
+                # train_loss_ = train_loss_ / (batch_indx + 1)
                 train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
-                train_distance[epoch] = train_dqc / (batch_indx + 1)
+                train_distance[epoch] = train_dqc / train_loss_val[1]
                 train_entropy[epoch] = entr / (batch_indx + 1)
                 train_log_distance[epoch] = log_dqc / (batch_indx + 1)
                 train_minVar[epoch] = var_min / (batch_indx + 1)
 
                 for arm in range(self.n_arm):
-                    train_recon[arm, epoch] = train_loss_rec[arm] / (batch_indx + 1)
+                    train_recon[arm, epoch] = train_loss_rec[arm] / train_loss_val[1]
                     for cc in range(self.n_categories):
                         train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / (batch_indx + 1)
 

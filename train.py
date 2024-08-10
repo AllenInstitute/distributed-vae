@@ -79,7 +79,7 @@ def main(r, ws, args):
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
                                                                                              fold=fold,
-                                                                                             deterministic=True,
+                                                                                             deterministic=False,
                                                                                              world_size=ws,
                                                                                              use_dist_sampler=use_dist_sampler,
                                                                                              rank=r)
