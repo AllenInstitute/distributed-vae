@@ -181,7 +181,3 @@ if __name__ == "__main__":
         fs.spawn_(main, ws, args)
     else:
         main(args.device, 1, args)
-
-# TODO:
-    # [] fix th.compile for mps
-    # [] check reparam_trick()

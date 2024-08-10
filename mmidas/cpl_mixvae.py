@@ -365,9 +365,6 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
-    def augment(self, augmenter, x):
-        return augmenter(x, self.noise)[1]
-
     def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -387,10 +384,7 @@ class cpl_mixVAE:
         return
             data_file_id: the output dictionary.
         """
-        # define current_time
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
-
-        # initialized saving arrays
 
         train_loss = np.zeros(n_epoch)
         validation_loss = np.zeros(n_epoch)
@@ -439,7 +433,7 @@ class cpl_mixVAE:
                     tt = time.time() 
                 
                     with torch.no_grad():
-                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), True, 0.1)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), batched=True, scale=0.1)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
                     if self.ref_prior:
                         c_bin = torch.Tensor(c_onehot[d_idx, :]).to(self.device)
@@ -811,12 +805,6 @@ class cpl_mixVAE:
                             if self.aug_file:
                                 noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
                                 _, gen_data = self.netA(data, noise, True, self.device)
-                                # if self.aug_param['n_zim'] > 1:
-                                #     data_bin = 0. * data
-                                #     data_bin[data > self.eps] = 1.
-                                #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
-                                #     trans_data.append(fake_data)
-                                # else:
                                 trans_data.append(gen_data)
                             else:
                                 trans_data.append(data)
@@ -952,8 +940,6 @@ class cpl_mixVAE:
     
         # return trained_model
     
-
-
     def eval_model(self, data_loader, c_p=0, c_onehot=0):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -1166,6 +1152,3 @@ class cpl_mixVAE:
 
         data = pickle.load(open(fname + '.p', "rb"))
         return data
-
-
-# 50 epochs
