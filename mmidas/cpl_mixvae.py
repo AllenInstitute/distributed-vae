@@ -215,19 +215,15 @@ class cpl_mixVAE:
         if self.aug_file:
             self.aug_model = torch.load(self.aug_file, map_location='cpu')
             self.aug_param = self.aug_model['parameters']
-            
+            self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
+                                      latent_dim=self.aug_param['num_z'],
+                                      input_dim=self.aug_param['n_features'])
             if load_weights:
                 print('loading weights...')
-                self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
-                                latent_dim=self.aug_param['num_z'],
-                                input_dim=self.aug_param['n_features'])
-                # Load the trained augmenter weights
                 self.netA.load_state_dict(self.aug_model['netA'])
             else:
                 print('warning: not loading weights...')
-                self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
-                                      latent_dim=self.aug_param['num_z'],
-                                      input_dim=self.aug_param['n_features'])
+                
             self.netA = self.netA.to(self.device).eval()
 
     def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
