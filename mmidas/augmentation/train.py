@@ -1,25 +1,13 @@
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
-import time, os
-from mmidas.augmentation.udagan import *
-from mmidas.augmentation.dataloader import get_data
+import time
+from mmidas.augmentation.networks import *
 from mmidas.augmentation.aug_utils import *
-# from module.model_sprites import *
 
-eps = 1e-8
+eps = 1e-4
 
-def train_udagan(data, parameters, device):
-
-    dataloader = get_data(data=data, batch_size=parameters['batch_size'])
-                             # datafile=parameters['dataset_file']) #  n_feature=parameters['n_features'], gene_id=parameters['feature'],  #key=parameters['feature'])
-
-    parameters['n_features'] = dataloader.dataset.tensors[0].size(-1)
-    netA = Augmenter(noise_dim=parameters['num_n'],
-                         latent_dim=parameters['num_z'],
-                        #  n_zim=parameters['n_zim'],
-                         input_dim=parameters['n_features']).to(device)
-    netD = Discriminator(input_dim=parameters['n_features']).to(device)
+def train_augmenter(netA, netD, dataloader, parameters, device):
 
     iter_num = len(dataloader)
 
@@ -40,9 +28,7 @@ def train_udagan(data, parameters, device):
     fake_label = 0.
     A_losses = []
     D_losses = []
-
-    print('-'*50)
-    print('Starting training ...')
+    b_size = parameters['batch_size']
 
     for epoch in range(parameters['num_epochs']):
         epoch_start_time = time.time()
@@ -50,12 +36,15 @@ def train_udagan(data, parameters, device):
         gen_loss_e, recon_loss_e = 0, 0
         triplet_loss_e = 0
         n_adv = 0
-        for i, (data, data_bin) in enumerate(dataloader, 0):
-            b_size = parameters['batch_size']
+        for i, (data, _) in enumerate(dataloader, 0):
+            data_bin = 0. * data
+            data_bin[data > eps] = 1.
+
             real_data = data.to(device)
             real_data_bin = data_bin.to(device)
             # Updating the discriminator -----------------------------------
             optimD.zero_grad()
+
             # Original samples
             label = torch.full((b_size,), real_label, device=device)
             _, probs_real = netD(real_data_bin)
@@ -69,21 +58,14 @@ def train_udagan(data, parameters, device):
 
             # Augmented samples
             label.fill_(fake_label)
-            noise = torch.randn(b_size, parameters['num_n'], device=device)
-            # noise += 0.1 * torch.sign(noise)
-            _, fake_data1 = netA(real_data, noise, True, device)
-            # zeros = torch.zeros(b_size, parameters['num_n'], device=device)
-            _, fake_data2 = netA(real_data, noise, False, device)
+            _, fake_data1 = netA(real_data, True, device)
+            _, fake_data2 = netA(real_data, False, device)
+
             # binarizing the augmented sample
-            if parameters['n_zim'] > 1:
-                # p_bern_1 = fake_data1[:, parameters['n_features']:]
-                # p_bern_2 = fake_data2[:, parameters['n_features']:]
+            if parameters['mode'] == 'ZINB':
                 p_bern_1 = real_data_bin * fake_data1[:, parameters['n_features']:]
                 p_bern_2 = real_data_bin * fake_data2[:, parameters['n_features']:]
-                # fake_data1_bin = real_data_bin * fake_data1
-                # fake_data2_bin = real_data_bin * fake_data2
-                    # p_bern_1 = fake_data1[:, parameters['n_features']:]
-                    # p_bern_2 = fake_data2[:, parameters['n_features']:]
+
                 fake_data1_bin = torch.bernoulli(p_bern_1)
                 fake_data2_bin = torch.bernoulli(p_bern_2)
                 fake_data = fake_data2[:, :parameters['n_features']] * real_data_bin
@@ -115,7 +97,7 @@ def train_udagan(data, parameters, device):
             # Augmented data treated as real data
             z1, probs_fake1 = netD(fake_data1_bin)
             z2, probs_fake2 = netD(fake_data2_bin)
-            # z0, _ = netD(real_data)
+      
             label.fill_(real_label)
             gen_loss = (criterionD(probs_fake1.view(-1), label) + criterionD(probs_fake2.view(-1), label)) / 2
             triplet_loss = TripletLoss(real_data_bin.view(b_size, -1),
@@ -124,8 +106,6 @@ def train_udagan(data, parameters, device):
                                        parameters['alpha'], 'BCE')
 
             recon_loss = (F.mse_loss(fake_data, real_data, reduction='mean') + criterionD(fake_data2_bin, real_data_bin)) / 2
-            # else:
-            #     recon_loss = (F.mse_loss(fake_data2, real_data, reduction='mean') + criterionD(fake_data2_bin, real_data_bin)) / 2
 
             # Loss value for the augmenter
             A_loss = parameters['lambda'][0] * gen_loss + \
@@ -155,7 +135,6 @@ def train_udagan(data, parameters, device):
                     D_loss_epoch, recon_loss_epoch, triplet_loss_epoch,
                     time.time() - epoch_start_time))
 
-    print("-" * 50)
     # Save trained models
     if parameters['save']:
 
@@ -165,7 +144,7 @@ def train_udagan(data, parameters, device):
             'optimD': optimD.state_dict(),
             'optimA': optimA.state_dict(),
             'parameters': parameters
-            }, parameters['file_name'])
+            }, parameters['saving_path'] + 'augmenter.pth')
 
         # Plot the training losses.
         plt.figure()
