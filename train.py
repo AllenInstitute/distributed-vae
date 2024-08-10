@@ -107,7 +107,7 @@ def main(r, ws, args):
                          mode=loss_mode)
 
     # Train and save the model
-    run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
+    run = wandb.init(project='mmidas-arms', config=vars(args)) if use_wandb else None
     cplMixVAE.model = fs.fsdp(cplMixVAE.model, auto_wrap_policy=fs.make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
     cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=lr)
 
@@ -133,14 +133,14 @@ if __name__ == "__main__":
 
     parser.add_argument("--n_arm", default=2, type=int, help="number of mixVAE arms for each modality")
 
-    parser.add_argument("--n_categories", default=115, type=int, help="number of cell types")
+    parser.add_argument("--n_categories", default=92, type=int, help="number of cell types")
     parser.add_argument("--state_dim", default=2, type=int, help="state variable dimension")
     parser.add_argument("--temp",  default=1, type=float, help="gumbel-softmax temperature")
     parser.add_argument("--tau",  default=.005, type=float, help="softmax temperature")
     parser.add_argument("--beta",  default=1, type=float, help="KL regularization parameter")
     parser.add_argument("--lam",  default=1, type=float, help="coupling factor")
     parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-    parser.add_argument("--n_epoch", default=20000, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch", default=50000, type=int, help="Number of epochs to train")
     parser.add_argument("--n_epoch_p", default=0, type=int, help="Number of epochs to train pruning algorithm")
     parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
     parser.add_argument("--max_prun_it", default=0, type=int, help="minimum number of samples in a class")

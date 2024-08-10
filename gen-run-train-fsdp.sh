@@ -1,20 +1,19 @@
 #!/bin/bash
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <arms> <gpu>"
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <arms> <gpu> <world-size>"
     exit 1
 fi
 
 ARMS=$1
 GPU=$2
-FILE="train-scripts/run-train-A$ARMS-$GPU.sh"
-
-
+WORLD_SIZE=$3
+FILE="train-scripts/run-train-fsdp-A$ARMS-$GPU.sh"
 
 cat << EOF > $FILE
 #!/bin/bash
 #SBATCH -N1
-#SBATCH --gpus=$GPU:1
+#SBATCH --gpus=$GPU:$WORLD_SIZE
 #SBATCH -c 32
 #SBATCH --mem=32G
 #SBATCH -p celltypes
@@ -24,5 +23,5 @@ cat << EOF > $FILE
 
 source activate mdist-mmidas
 
-python train.py --n_arm $ARMS --use-wandb --gpus 1
+python train.py --n_arm $ARMS --use-wandb --use_dist_sampler
 EOF

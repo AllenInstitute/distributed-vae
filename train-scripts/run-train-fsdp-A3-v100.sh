@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -N1
-#SBATCH --gpus=v100:1
+#SBATCH --gpus=v100:4
 #SBATCH -c 32
 #SBATCH --mem=32G
 #SBATCH -p celltypes
@@ -10,4 +10,4 @@
 
 source activate mdist-mmidas
 
-python train.py --n_arm 3 --use-wandb --gpus 1
+python train.py --n_arm 3 --use-wandb --use_dist_sampler

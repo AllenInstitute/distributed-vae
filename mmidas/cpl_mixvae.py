@@ -612,7 +612,7 @@ class cpl_mixVAE:
                             plt.ylabel('arm_' + str(arm_b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title('|c|=' + str(self.n_categories), fontsize=20)
+                            plt.title(f'Epoch {epoch} |c|=' + str(self.n_categories), fontsize=20)
                             plt.savefig(self.folder + '/consensus_arm_' + str(arm_a) + '_arm_' + str(arm_b) + '_epoch_' + str(epoch) + '.png', dpi=600)
                             plt.close("all")
 
