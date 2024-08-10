@@ -1,17 +1,13 @@
 import argparse
 import os
 import numpy as np
-import signal
-import torch as th
-import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
 from pathlib import Path
 
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import wandb
-
-import fsdp_mnist as fs
 
 def is_path(x):
     return isinstance(x, Path)
@@ -19,22 +15,13 @@ def is_path(x):
 def wrap_in_path(x):
     return wrap_in_path(Path(x)) if not is_path(x) else x
 
-signal.signal(signal.SIGINT, lambda _, __: fs.cu_dist_())
-
 # Main function
-def main(r, ws, args):
-    globals().update(vars(args))
+def main(n_categories, n_arm, state_dim, latent_dim, fc_dim, n_epoch, n_epoch_p, min_con, max_prun_it, batch_size, lam, lam_pc, loss_mode,
+         p_drop, s_drop, lr, temp, n_run, device, hard, tau, variational, ref_pc, augmentation, pretrained_model, n_pr, beta, dataset, use_wandb):
 
-    if ws > 1:
-        fs.set_prn_(r)
-        fs.su_dist_(r, ws, addr, port)
-        fs.set_gpu_(r)
+    _args = locals()
+    # try int(device):
 
-    seed = 546
-    th.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
 
     # Load configuration paths
     toml_file = 'pyproject.toml'
@@ -45,8 +32,8 @@ def main(r, ws, args):
     folder_name = f'Run{n_run}_K{n_categories}_S{state_dim}_AUG{augmentation}_LR{lr}_A{n_arm}_B{batch_size}' + \
                   f'_E{n_epoch}_Ep{n_epoch_p}'
     saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path'] / folder_name
-    os.makedirs(saving_folder, exist_ok=True)
-    os.makedirs(saving_folder / 'model', exist_ok=True)
+    # os.makedirs(saving_folder, exist_ok=True)
+    # os.makedirs(saving_folder / 'model', exist_ok=True)
     saving_folder = str(saving_folder)
     
 
@@ -69,7 +56,7 @@ def main(r, ws, args):
 
     # Initialize the coupled mixVAE (MMIDAS) model
     cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
-                                 device=r,
+                                 device=device,
                                  aug_file=aug_file)
 
     # Make data loaders for training, validation, and testing
@@ -78,11 +65,7 @@ def main(r, ws, args):
                                                                                              label=data_dict['cluster'],
                                                                                              batch_size=batch_size,
                                                                                              n_aug_smp=0,
-                                                                                             fold=fold,
-                                                                                             deterministic=False,
-                                                                                             world_size=ws,
-                                                                                             use_dist_sampler=use_dist_sampler,
-                                                                                             rank=r)
+                                                                                             fold=fold)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,
@@ -106,11 +89,9 @@ def main(r, ws, args):
                          n_pr=n_pr,
                          mode=loss_mode)
 
+    cplMixVAE.model = FSDP(cplMixVAE.model, process_group='nccl')
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=_args) if use_wandb else None
-    cplMixVAE.model = fs.fsdp(cplMixVAE.model, auto_wrap_policy=fs.make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
-    cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=lr)
-
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -119,11 +100,7 @@ def main(r, ws, args):
                                  c_p=data_dict['c_p'],
                                  min_con=min_con,
                                  max_prun_it=max_prun_it,
-                                 run=run, ws=ws, rank=r)
-
-
-    if ws > 1:
-        fs.cu_dist_()
+                                 run=run)
 
 
 # Run the main function when the script is executed
@@ -161,26 +138,6 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
     parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
-    parser.add_argument('--gpus', type=int, default=-1)
-    parser.add_argument('--use_orig_params', default=False, action='store_true')
-    parser.add_argument('--num_workers', type=int, default=-1)
-    parser.add_argument('--use_dist_sampler', default=False, action='store_true')
-    parser.add_argument('--prefetch_factor', type=int, default=-1)
-    args = fs.make_args(parser)
-    
-    ws = fs.ct_gpu_args(args)
-    fs.prn(f'ws: {ws}')
-    if ws > 1:
-        args.addr = fs.get_free_addr()
-        args.port = fs.get_free_port(args.addr)
-        args.num_workers = fs.count_num_workers(args)
-        args.gpus = ws
-        args.prefetch_factor = fs.get_prefetch_factor(args)
-        fs.prn(args)
-        fs.spawn_(main, ws, args)
-    else:
-        main(args.device, 1, args)
 
-# TODO:
-    # [] fix th.compile for mps
-    # [] check reparam_trick()
+    args = parser.parse_args()
+    main(**vars(args))
