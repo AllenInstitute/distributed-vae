@@ -84,7 +84,7 @@ def main(r, ws, args):
     cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
                                  device=r,
                                  aug_file=aug_file,
-                                 load_weights=True)
+                                 load_weights=False)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose

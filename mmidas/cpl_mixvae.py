@@ -25,7 +25,8 @@ from torchvision import datasets, transforms
 from tqdm import tqdm, trange
 import wandb
 
-from .augmentation.networks import Augmenter, Augmenter_smartseq
+from .augmentation.networks import Augmenter, Augmenter_smartseq, Discriminator
+from mmidas.augmentation.aug_utils import TripletLoss
 from .nn_model import mixVAE_model
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
@@ -212,7 +213,7 @@ class cpl_mixVAE:
         if self.aug_file:
             self.aug_model = torch.load(self.aug_file, map_location='cpu')
             self.aug_param = self.aug_model['parameters']
-            self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
+            self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
                                       latent_dim=self.aug_param['num_z'],
                                       input_dim=self.aug_param['n_features'])
             if load_weights:
@@ -402,9 +403,28 @@ class cpl_mixVAE:
         f6_mask = f6_mask.to(self.device)
         B = train_loader.batch_size
 
+        REAL = 1.
+        FAKE = 0.
+        aug_losses = []
+        disc_losses = []
+
+        disc = Discriminator(self.input_dim).to(rank) # TODO: check
+
+        opt_aug = optim.Adam(self.netA.parameters(), lr=1e-3)
+        opt_disc = optim.Adam(disc.parameters(), lr=1e-3)
+        B = train_loader.batch_size
+
         if self.init:
             print("training...")
             epoch_time = []
+
+            total_aug_loss = 0.
+            total_disc_loss = 0.
+            total_gen_loss = 0.
+            total_recon_loss = 0.
+            total_triplet_loss = 0.
+            total_n_adv = 0.
+
             for epoch in trange(n_epoch):
                 train_loss_val = th.zeros(2, device=rank)
                 train_jointloss_val = th.zeros(1, device=rank)
@@ -416,13 +436,99 @@ class cpl_mixVAE:
                 train_loss_rec = th.zeros(self.n_arm, device=rank)
                 train_KLD_cont = th.zeros(self.n_arm, self.n_categories, device=rank)
                 self.model.train()
-
                 train_zcat = [[] for _ in range(self.n_arm)]
+
+                aug_loss = 0.
+                disc_loss = 0.
+                gen_loss = 0.
+                recon_loss = 0.
+                triplet_loss = 0.
+                n_adv = 0.
 
                 for batch_indx, (data, d_idx), in enumerate(train_loader):
                     data = data.to(self.device)
+                    data_bin = th.where(data > 0.1, 1., 0.) # TODO: check this eps
                     d_idx = d_idx.to(int)
                         
+                    # augmenter training
+                    self.netA.train()
+                    disc.train()
+
+                    opt_disc.zero_grad()
+                    label = th.full((B,), REAL, device=rank)
+                    _, probs_real = disc(data_bin)
+                    loss_real = F.binary_cross_entropy(probs_real.view(-1), label)
+
+                    if F.relu(loss_real - np.log(2) / 2) > 0:
+                        loss_real.backward()
+                        step_disc = True
+                    else:
+                        step_disc = False
+
+                    label.fill_(FAKE)
+                    _, fake_data1 = self.netA(data, batched=False, noise=True, scale=1.)
+                    _, fake_data2 = self.netA(data, batched=False, noise=False, scale=1.)
+                    if self.netA.mode == 'ZINB':
+                        p_bern_1 = data_bin * fake_data1[:, self.aug_param['n_features']:] # TODO: check this
+                        p_bern_2 = data_bin * fake_data2[:, self.aug_param['n_features']:]
+
+                        fake_data1_bin = th.bernoulli(p_bern_1)
+                        fake_data2_bin = th.bernoulli(p_bern_2)
+                        fake_data = fake_data2[:, :self.aug_param['n_features']] * data_bin
+                    else:
+                        fake_data1_bin = th.zeros_like(fake_data1)
+                        fake_data2_bin = th.zeros_like(fake_data2)
+                        fake_data1_bin[fake_data1 > 1e-3] = 1.
+                        fake_data2_bin[fake_data2 > 1e-3] = 1.
+                        fake_data = 1. * fake_data2 # TODO
+
+                    _, probs_fake1 = disc(fake_data1_bin.detach())
+                    _, probs_fake2 = disc(fake_data2_bin.detach())
+                    loss_fake = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
+
+                    if F.relu(loss_fake - np.log(2) / 2) > 0:
+                        loss_fake.backward()
+                        step_disc = True
+
+                    D_loss = loss_real + loss_fake
+                    
+                    if step_disc:
+                        opt_disc.step()
+                    else:
+                        n_adv += 1
+
+                    opt_aug.zero_grad()
+                    z1, probs_fake1 = disc(fake_data1_bin)
+                    z2, probs_fake2 = disc(fake_data2_bin)
+                    label.fill_(REAL)
+                    gen_loss_ = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
+                    triplet_loss_ = TripletLoss(data_bin.view(B, -1), 
+                                                fake_data1_bin.view(B, -1), 
+                                                fake_data2_bin.view(B, -1), 
+                                                self.aug_param['alpha'], 'BCE')
+
+                    recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
+
+                    aug_loss_ = self.aug_param['lambda'][0] * gen_loss_ + \
+                                self.aug_param['lambda'][1] * triplet_loss_ + \
+                                self.aug_param['lambda'][2] * F.mse_loss(z1, z2) + \
+                                self.aug_param['lambda'][3] * recon_loss_
+
+                    aug_loss_.backward()
+                    opt_aug.step()
+
+                    aug_loss += aug_loss_.data.item()
+                    disc_loss += D_loss.data.item()
+                    gen_loss += gen_loss_.data.item()
+                    recon_loss += recon_loss_.data.item()
+                    triplet_loss += triplet_loss_.data.item()
+                    aug_losses.append(aug_loss)
+                    disc_losses.append(disc_loss)
+
+                    self.netA.eval()
+                    disc.eval()
+                    # mmidas training
+
                     tt = time.time() 
                 
                     with torch.no_grad():
@@ -455,6 +561,13 @@ class cpl_mixVAE:
 
                     for arm in range(self.n_arm):
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+
+                total_aug_loss += aug_loss
+                total_disc_loss += disc_loss
+                total_gen_loss += gen_loss
+                total_recon_loss += recon_loss
+                total_triplet_loss += triplet_loss
+                print(f'epoch {epoch} | aug: {aug_loss} | disc: {disc_loss} | gen: {gen_loss} | recon: {recon_loss} | triplet: {triplet_loss}')
 
                 num_batches = len(train_loader)
                 assert batch_indx + 1 == len(train_loader)
