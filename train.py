@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 import os
 import numpy as np
 import signal
@@ -8,6 +9,7 @@ from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
 from pathlib import Path
+from pyrsistent import pmap
 
 import wandb
 
@@ -21,6 +23,36 @@ def wrap_in_path(x):
 
 signal.signal(signal.SIGINT, lambda _, __: fs.cu_dist_())
 
+def parse_toml_(toml_file, sub_file='mouse_smartseq', args=None, trained=False):
+    def _make_saving_folders_(saving_folder, existing=0):
+        if not os.path.exists(saving_folder + f'_{existing}'):
+            return saving_folder + f'_{existing}'
+        else:
+            return _make_saving_folders_(saving_folder, existing + 1)
+    
+    config = get_paths(toml_file=toml_file, sub_file=sub_file)
+    data_file = wrap_in_path(config[sub_file]['data_path']) / wrap_in_path(config[sub_file]['anndata_file'])
+    folder_name = f'Run{args.n_run}_K{args.n_categories}_S{args.state_dim}_AUG{args.augmentation}_LR{args.lr}_A{args.n_arm}_B{args.batch_size}' + \
+                    f'_E{args.n_epoch}_Ep{args.n_epoch_p}'
+    saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name
+    return pmap(map(lambda kv: (kv[0], str(kv[1])), {
+        'data': data_file,
+        'saving': _make_saving_folders_(str(saving_folder)),
+        'aug': config['paths']['main_dir'] / config[sub_file]['aug_model'],
+        'trained': config['paths']['main_dir'] / config[sub_file]['trained_model'] if trained else ''
+    }.items()))
+
+def make_folders_(saving_folder):
+    assert not os.path.exists(saving_folder), saving_folder
+    os.makedirs(saving_folder, exist_ok=True)
+    os.makedirs(saving_folder + '/model', exist_ok=True)
+
+def update_args(args, **kw):
+    cpy = deepcopy(args)
+    for k, v in kw.items():
+        setattr(cpy, k, v)
+    return cpy
+
 # Main function
 def main(r, ws, args):
     globals().update(vars(args))
@@ -32,45 +64,25 @@ def main(r, ws, args):
 
     seed = 546
     th.manual_seed(seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
 
     # Load configuration paths
-    toml_file = 'pyproject.toml'
-    config = get_paths(toml_file=toml_file, sub_file=dataset)
-    data_file = wrap_in_path(config[dataset]['data_path']) / wrap_in_path(config[dataset]['anndata_file'])   
-
-    # Define folder name for saving results
-    folder_name = f'Run{n_run}_K{n_categories}_S{state_dim}_AUG{augmentation}_LR{lr}_A{n_arm}_B{batch_size}' + \
-                  f'_E{n_epoch}_Ep{n_epoch_p}'
-    saving_folder = config['paths']['main_dir'] / config[dataset]['saving_path'] / folder_name
-    os.makedirs(saving_folder, exist_ok=True)
-    os.makedirs(saving_folder / 'model', exist_ok=True)
-    saving_folder = str(saving_folder)
-    
-
-    # Determine augmentation file path
-    if augmentation:
-        aug_file = config['paths']['main_dir'] / config[dataset]['aug_model']
-    else:
-        aug_file = ''
-
-    # Determine pretrained model file path
-    if pretrained_model:
-        trained_model = config['paths']['main_dir'] / config[dataset]['trained_model']
-    else:
-        trained_model = ''
+    cfg = parse_toml_('pyproject.toml', 'mouse_smartseq', args, trained=False)
+    # make_folders_(cfg.saving)
 
     # Load data
-    data_dict = load_data(datafile=data_file)
+    data_dict = load_data(datafile=cfg.data)
     print("Data loaded successfully!")
     print(f"Number of cells: {data_dict['log1p'].shape[0]}, Number of genes: {data_dict['log1p'].shape[1]}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
-    cplMixVAE = cpl_mixVAE(saving_folder=saving_folder,
+    cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
                                  device=r,
-                                 aug_file=aug_file)
+                                 aug_file=cfg.aug)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
@@ -102,13 +114,15 @@ def main(r, ws, args):
                          beta=beta,
                          ref_prior=ref_pc,
                          variational=variational,
-                         trained_model=trained_model,
+                         trained_model=cfg.trained,
                          n_pr=n_pr,
                          mode=loss_mode)
 
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=vars(args)) if use_wandb else None
-    cplMixVAE.model = fs.fsdp(cplMixVAE.model, auto_wrap_policy=fs.make_wrap_policy(20000)) if ws > 1 else cplMixVAE.model
+    cplMixVAE.model = (fs.fsdp(cplMixVAE.model, 
+                               auto_wrap_policy=fs.make_wrap_policy(20000)) 
+                       if ws > 1 else cplMixVAE.model)
     cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=lr)
 
     model_file = cplMixVAE.train(train_loader=train_loader,
@@ -121,10 +135,8 @@ def main(r, ws, args):
                                  max_prun_it=max_prun_it,
                                  run=run, ws=ws, rank=r)
 
-
     if ws > 1:
         fs.cu_dist_()
-
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
@@ -171,11 +183,10 @@ if __name__ == "__main__":
     ws = fs.ct_gpu_args(args)
     fs.prn(f'ws: {ws}')
     if ws > 1:
-        args.addr = fs.get_free_addr()
-        args.port = fs.get_free_port(args.addr)
-        args.num_workers = fs.count_num_workers(args)
-        args.gpus = ws
-        args.prefetch_factor = fs.get_prefetch_factor(args)
+        args = update_args(args, addr=fs.get_free_addr(), 
+                           port=fs.get_free_port(args.addr), 
+                           num_workers=fs.count_num_workers(args),
+                           gpus=ws, prefetch_factor=fs.get_prefetch_factor(args))
         fs.prn(args)
         fs.spawn_(main, ws, args)
     else:

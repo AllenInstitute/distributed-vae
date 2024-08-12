@@ -1,13 +1,14 @@
 #!/bin/bash
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <arms> <gpu>"
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <arms> <gpu> <epochs>"
     exit 1
 fi
 
 ARMS=$1
 GPU=$2
-FILE="train-scripts/run-train-A$ARMS-$GPU.sh"
+EPOCHS=$3
+FILE="train-scripts/run-train-A$ARMS-E$EPOCHS-$GPU.sh"
 
 
 
@@ -20,9 +21,9 @@ cat << EOF > $FILE
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
 #SBATCH -e mmidas-logs/mmidas_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 
 source activate mdist-mmidas
 
-python train.py --n_arm $ARMS --use-wandb --gpus 1
+python train.py --n_arm $ARMS --use-wandb --gpus 1 --n_epoch $EPOCHS
 EOF
