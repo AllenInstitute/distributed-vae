@@ -68,12 +68,6 @@ def make_pbar(loader, rank, *funs):
 
 def is_tensor(obj):
     return isinstance(obj, torch.Tensor)
-
-def map_convert(dtype, t):
-    if is_tensor(t):
-        return t.to(dtype)
-    else:
-        raise ValueError("error: input type not supported")
     
 def to_device(t, device): 
     if is_tensor(t):
