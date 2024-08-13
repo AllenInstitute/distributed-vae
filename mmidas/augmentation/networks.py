@@ -4,13 +4,15 @@ import torch.nn.functional as F
 from mmidas.augmentation.aug_utils import *
 
 class Augmenter(nn.Module):
-    def __init__(self, noise_dim, latent_dim, input_dim, n_dim=500, mode='MSE', p_drop=0.5):
+    def __init__(self, noise_dim, latent_dim, input_dim, n_dim=500, mode='MSE', p_drop=0.5, alpha=0.1):
         super().__init__()
 
         moment = 0.01
         self.dp = nn.Dropout(p_drop)
         self.mode = mode
         self.noise_dim = noise_dim
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
 
         self.noise = nn.Linear(noise_dim, noise_dim, bias=False)
         self.bnz = nn.BatchNorm1d(self.noise.out_features)
@@ -179,6 +181,7 @@ class Augmenter_smartseq(nn.Module):
 
         moment = 0.01
         self.noise_dim = noise_dim
+        # self.mode = 'ZINB' if 
 
         self.dp = nn.Dropout(p_drop)
 

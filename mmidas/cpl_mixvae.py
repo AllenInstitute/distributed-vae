@@ -169,7 +169,7 @@ def count_workers_(deterministic=False):
 
 class cpl_mixVAE:
 
-    def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-8, 
+    def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-4, 
                  save_flag=True, load_weights=True):
         """
         Initialized the cpl_mixVAE class.
@@ -203,20 +203,7 @@ class cpl_mixVAE:
                 if isinstance(device, int):
                     set_gpu_(device)
                 print('---> ' + gpu_name(current_gpu()))
-
-        if self.aug_file:
-            self.aug_model = torch.load(self.aug_file, map_location='cpu')
-            self.aug_param = self.aug_model['parameters']
-            self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
-                                      latent_dim=self.aug_param['num_z'],
-                                      input_dim=self.aug_param['n_features'])
-            if load_weights:
-                print('loading weights...')
-                self.netA.load_state_dict(self.aug_model['netA'])
-            else:
-                print('warning: not loading weights...')
-                
-            self.netA = self.netA.to(self.device).eval()
+        self.aug_file = aug_file
 
     def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
         self.batch_size = batch_size
@@ -286,7 +273,7 @@ class cpl_mixVAE:
 
         return alldata_loader, train_loader, validation_loader, test_loader
 
-    def init_model(self, n_categories, state_dim, input_dim, fc_dim=100, lowD_dim=10, x_drop=0.5, s_drop=0.2, lr=.001,
+    def init_mixvae(self, n_categories, state_dim, input_dim, fc_dim=100, lowD_dim=10, x_drop=0.5, s_drop=0.2, lr=.001,
                    lam=1, lam_pc=1, n_arm=2, temp=1., tau=0.005, beta=1., hard=False, variational=True, ref_prior=False,
                    trained_model='', n_pr=0, momentum=.01, mode='MSE'):
         """
@@ -330,21 +317,40 @@ class cpl_mixVAE:
         
         self.model = self.model.to(self.device)
     
-
-
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         if len(trained_model) > 0:
             print('Load the pre-trained model')
             # if you wish to load another model for evaluation
             loaded_file = torch.load(trained_model, map_location='cpu')
             self.model.load_state_dict(loaded_file['model_state_dict'])
-            self.optimizer.load_state_dict(loaded_file['optimizer_state_dict'])
+            # self.optimizer.load_state_dict(loaded_file['optimizer_state_dict'])
             self.init = False
             self.n_pr = n_pr
         else:
             self.init = True
             self.n_pr = 0
+
+
+    @staticmethod
+    def mk_aug(aug_file='', device='cuda', **kw): 
+        if aug_file:
+            aug_model = torch.load(aug_file, map_location='cpu')
+            aug_param = aug_model['parameters']
+            netA = Augmenter(noise_dim=aug_param['num_n'],
+                             latent_dim=aug_param['num_z'],
+                             input_dim=aug_param['n_features'])
+            
+            netD = Discriminator(input_dim=aug_param['n_features'])
+            netA.load_state_dict(aug_model['netA'])
+        else: 
+            netA = Augmenter(noise_dim=kw['num_n'],
+                                latent_dim=kw['num_z'],
+                                mode=kw['mode'],
+                                input_dim=kw['n_features'])
+            netD = Discriminator(input_dim=kw['n_features'])
+
+        return [x.to(device) for x in (netA, netD)]
 
 
     def load_model(self, trained_model):
@@ -353,7 +359,7 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
-    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1):
+    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, lms, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1, netA=None, netD=None, lr=1e-3, vae_after=0, alpha=0):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
         pcikle used for saving the file
@@ -402,23 +408,14 @@ class cpl_mixVAE:
         aug_losses = []
         disc_losses = []
 
-        disc = Discriminator(self.input_dim).to(rank) # TODO: check
-
-        opt_aug = optim.Adam(self.netA.parameters(), lr=1e-3)
-        opt_disc = optim.Adam(disc.parameters(), lr=1e-3)
+        opt_aug = optim.Adam(netA.parameters(), lr=lr)
+        opt_disc = optim.Adam(netD.parameters(), lr=lr)
         B = train_loader.batch_size
 
         if self.init:
             print("training...")
             epoch_time = []
-
-            total_aug_loss = 0.
-            total_disc_loss = 0.
-            total_gen_loss = 0.
-            total_recon_loss = 0.
-            total_triplet_loss = 0.
-            total_n_adv = 0.
-
+            
             for epoch in trange(n_epoch):
                 train_loss_val = th.zeros(2, device=rank)
                 train_jointloss_val = th.zeros(1, device=rank)
@@ -441,16 +438,16 @@ class cpl_mixVAE:
 
                 for batch_indx, (data, d_idx), in enumerate(train_loader):
                     data = data.to(self.device)
-                    data_bin = th.where(data > 0.1, 1., 0.) # TODO: check this eps
+                    data_bin = th.where(data > self.eps, 1., 0.) # TODO: check this eps
                     d_idx = d_idx.to(int)
                         
                     # augmenter training
-                    self.netA.train()
-                    disc.train()
+                    netA.train()
+                    netD.train()
 
                     opt_disc.zero_grad()
                     label = th.full((B,), REAL, device=rank)
-                    _, probs_real = disc(data_bin)
+                    _, probs_real = netD(data_bin)
                     loss_real = F.binary_cross_entropy(probs_real.view(-1), label)
 
                     if F.relu(loss_real - np.log(2) / 2) > 0:
@@ -460,24 +457,24 @@ class cpl_mixVAE:
                         step_disc = False
 
                     label.fill_(FAKE)
-                    _, fake_data1 = self.netA(data, batched=False, noise=True, scale=1.)
-                    _, fake_data2 = self.netA(data, batched=False, noise=False, scale=1.)
-                    if self.netA.mode == 'ZINB':
-                        p_bern_1 = data_bin * fake_data1[:, self.aug_param['n_features']:] # TODO: check this
-                        p_bern_2 = data_bin * fake_data2[:, self.aug_param['n_features']:]
+                    _, fake_data1 = netA(data, batched=False, noise=True, scale=1.)
+                    _, fake_data2 = netA(data, batched=False, noise=False, scale=1.)
+                    if netA.mode == 'ZINB':
+                        p_bern_1 = data_bin * fake_data1[:, netA.input_dim:] # TODO: check this
+                        p_bern_2 = data_bin * fake_data2[:, netA.input_dim:]
 
                         fake_data1_bin = th.bernoulli(p_bern_1)
                         fake_data2_bin = th.bernoulli(p_bern_2)
-                        fake_data = fake_data2[:, :self.aug_param['n_features']] * data_bin
+                        fake_data = fake_data2[:, :netA.input_dim] * data_bin
                     else:
                         fake_data1_bin = th.zeros_like(fake_data1)
                         fake_data2_bin = th.zeros_like(fake_data2)
-                        fake_data1_bin[fake_data1 > 1e-3] = 1.
-                        fake_data2_bin[fake_data2 > 1e-3] = 1.
+                        fake_data1_bin[fake_data1 > self.eps] = 1.
+                        fake_data2_bin[fake_data2 > self.eps] = 1.
                         fake_data = 1. * fake_data2 # TODO
 
-                    _, probs_fake1 = disc(fake_data1_bin.detach())
-                    _, probs_fake2 = disc(fake_data2_bin.detach())
+                    _, probs_fake1 = netD(fake_data1_bin.detach())
+                    _, probs_fake2 = netD(fake_data2_bin.detach())
                     loss_fake = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
 
                     if F.relu(loss_fake - np.log(2) / 2) > 0:
@@ -492,21 +489,24 @@ class cpl_mixVAE:
                         n_adv += 1
 
                     opt_aug.zero_grad()
-                    z1, probs_fake1 = disc(fake_data1_bin)
-                    z2, probs_fake2 = disc(fake_data2_bin)
+                    z1, probs_fake1 = netD(fake_data1_bin)
+                    z2, probs_fake2 = netD(fake_data2_bin)
                     label.fill_(REAL)
                     gen_loss_ = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
                     triplet_loss_ = TripletLoss(data_bin.view(B, -1), 
                                                 fake_data1_bin.view(B, -1), 
                                                 fake_data2_bin.view(B, -1), 
-                                                self.aug_param['alpha'], 'BCE')
+                                                alpha, 'BCE')
 
-                    recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
+                    recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') \
+                                + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
 
-                    aug_loss_ = self.aug_param['lambda'][0] * gen_loss_ + \
-                                self.aug_param['lambda'][1] * triplet_loss_ + \
-                                self.aug_param['lambda'][2] * F.mse_loss(z1, z2) + \
-                                self.aug_param['lambda'][3] * recon_loss_
+                    # aug_loss_ = loss_fn(gen_loss_, triplet_loss_, F.mse_loss(z1, z2), recon_loss_)
+                    # # aug_loss_ = triplet_loss(gen_kiss, triplet_loss, F.mse)
+                    aug_loss_ = lms[0] * gen_loss_ + \
+                                lms[1] * triplet_loss_ + \
+                                lms[2] * F.mse_loss(z1, z2) + \
+                                lms[3] * recon_loss_
 
                     aug_loss_.backward()
                     opt_aug.step()
@@ -519,55 +519,65 @@ class cpl_mixVAE:
                     aug_losses.append(aug_loss)
                     disc_losses.append(disc_loss)
 
-                    self.netA.eval()
-                    disc.eval()
-                    # mmidas training
 
-                    tt = time.time() 
-                
-                    with torch.no_grad():
-                        trans_data = self.netA(data.expand(self.n_arm, -1, -1), batched=True, scale=0.1, noise=True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
+                    if epoch > vae_after:
+                        netA.eval()
+                        netD.eval()
 
-                    if self.ref_prior:
-                        c_bin = torch.Tensor(c_onehot[d_idx, :]).to(self.device)
-                        prior_c = torch.Tensor(c_p[d_idx, :]).to(self.device)
-                    else:
-                        c_bin = 0.
-                        prior_c = 0.
+                        # mmidas training
+                        tt = time.time() 
+                    
+                        with torch.no_grad():
+                            trans_data = netA(data.expand(self.n_arm, -1, -1), batched=True, scale=0.1, noise=True)[1] if self.aug_file else data.expand(self.n_arm, -1, -1)
 
-                    self.optimizer.zero_grad()
-                    recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
-                    for arm in range(self.n_arm):
-                        train_zcat[arm].append(qc[arm].cpu().data.view(qc[arm].size()[0], self.n_categories).argmax(dim=1).detach().numpy())
+                        if self.ref_prior:
+                            c_bin = torch.Tensor(c_onehot[d_idx, :]).to(self.device)
+                            prior_c = torch.Tensor(c_p[d_idx, :]).to(self.device)
+                        else:
+                            c_bin = 0.
+                            prior_c = 0.
 
-                    loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
-                        self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
-                    loss.backward()
-                    self.optimizer.step()
+                        self.optimizer.zero_grad()
+                        recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, log_qc = self.model(x=trans_data, temp=self.temp, prior_c=prior_c)
+                        for arm in range(self.n_arm):
+                            train_zcat[arm].append(qc[arm].cpu().data.view(qc[arm].size()[0], self.n_categories).argmax(dim=1).detach().numpy())
 
-                    train_loss_val[0] += loss.data.item()
-                    train_loss_val[1] += 1
-                    train_jointloss_val += loss_joint
-                    train_dqc += d_qc
-                    log_dqc += dist_c
-                    entr += entropy
-                    var_min += min_var_0.data.item()
+                        loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
+                            self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
+                        loss.backward()
+                        self.optimizer.step()
 
-                    for arm in range(self.n_arm):
-                        train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+                        train_loss_val[0] += loss.data.item()
+                        train_loss_val[1] += 1
+                        train_jointloss_val += loss_joint
+                        train_dqc += d_qc
+                        log_dqc += dist_c
+                        entr += entropy
+                        var_min += min_var_0.data.item()
 
-                total_aug_loss += aug_loss
-                total_disc_loss += disc_loss
-                total_gen_loss += gen_loss
-                total_recon_loss += recon_loss
-                total_triplet_loss += triplet_loss
+                        for arm in range(self.n_arm):
+                            train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
+
+                # total_aug_loss += aug_loss
+                # total_disc_loss += disc_loss
+                # total_gen_loss += gen_loss
+                # total_recon_loss += recon_loss
+                # total_triplet_loss += triplet_loss
+                aug_loss /= len(train_loader)
+                disc_loss /= len(train_loader)
+                gen_loss /= len(train_loader)
+                recon_loss /= len(train_loader)
+                triplet_loss /= len(train_loader)
+
+                # n_adv /= len(train_loader)
+
                 print(f'epoch {epoch} | aug: {aug_loss} | disc: {disc_loss} | gen: {gen_loss} | recon: {recon_loss} | triplet: {triplet_loss}')
 
                 num_batches = len(train_loader)
-                assert batch_indx + 1 == len(train_loader)
-                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Distance: {:.4f}, '.format(
-                    epoch, train_loss_val[0].data.item() / num_batches, train_loss_rec[0].data.item() / num_batches, train_loss_rec[1].data.item() / num_batches, 
-                     train_dqc.data.item() / num_batches))
+                assert batch_indx + 1 == len(train_loader), f"batch_indx: {batch_indx}, len(train_loader): {len(train_loader)}"
+                # print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Distance: {:.4f}, '.format(
+                #     epoch, train_loss_val[0].data.item() / num_batches, train_loss_rec[0].data.item() / num_batches, train_loss_rec[1].data.item() / num_batches, 
+                #     train_dqc.data.item() / num_batches))
 
                 if ws > 1:
                     dist.all_reduce(train_loss_val, op=dist.ReduceOp.SUM)
@@ -593,7 +603,7 @@ class cpl_mixVAE:
 
                 _time = time.time() - t0
                 print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '
-                      'Entropy: {:.4f}, Distance: {:.4f}, Min. Var: {:.6f}, Elapsed Time:{:.2f}, '.format(
+                    'Entropy: {:.4f}, Distance: {:.4f}, Min. Var: {:.6f}, Elapsed Time:{:.2f}, '.format(
                     epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
                     train_entropy[epoch], train_distance[epoch], train_minVar[epoch], _time))
                 

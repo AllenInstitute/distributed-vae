@@ -85,7 +85,7 @@ def main(r, ws, args):
     cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
                                  device=r,
                                  aug_file=cfg.aug,
-                                 load_weights=True)
+                                 load_weights=False)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
@@ -100,7 +100,7 @@ def main(r, ws, args):
                                                                                              rank=r)
 
     # Initialize the model with specified parameters
-    cplMixVAE.init_model(n_categories=n_categories,
+    cplMixVAE.init_mixvae(n_categories=n_categories,
                          state_dim=state_dim,
                          input_dim=data_dict['log1p'].shape[1],
                          fc_dim=fc_dim,
@@ -120,14 +120,32 @@ def main(r, ws, args):
                          trained_model=cfg.trained,
                          n_pr=n_pr,
                          mode=loss_mode)
+    
+    print(f'cfg.saving {cfg.saving}')
+    parameters = {'batch_size': batch_size,  # batch size
+                'num_epochs': n_epoch,  # number of epochs
+                'alpha': aug_alpha,  # triplet loss hyperparameter
+                'num_z': aug_latent_dim, # latent space dimension
+                'num_n': aug_noise, # noise dimension
+                'lambda': aug_wts, # weights of the augmenter loss
+                'dataset_file': '',
+                'mode': loss_mode,
+                'initial_w': False, # initial weights
+                'affine': False,
+                'saving_path': cfg.saving,
+                'n_features': data_dict['log1p'].shape[-1],
+    }
+    cfg = cfg.set('aug', '')
+    print('warning: disabling augmentation')
+    netA, netD = cplMixVAE.mk_aug(aug_file=cfg.aug, device=r, **parameters)
 
     # Train and save the model
     run = wandb.init(project='mmidas-arms', config=vars(args)) if use_wandb else None
     cplMixVAE.model = (fs.fsdp(cplMixVAE.model, 
-                               auto_wrap_policy=fs.make_wrap_policy(20000)) 
+                               auto_wrap_policy=fs.make_wrap_policy(20000))
                        if ws > 1 else cplMixVAE.model)
     cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=lr)
-
+    
     model_file = cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=n_epoch,
@@ -136,7 +154,9 @@ def main(r, ws, args):
                                  c_p=data_dict['c_p'],
                                  min_con=min_con,
                                  max_prun_it=max_prun_it,
-                                 run=run, ws=ws, rank=r)
+                                 netA=netA, netD=netD, lr=lr,
+                                 lms=parameters['lambda'],
+                                 run=run, ws=ws, rank=r, vae_after=vae_after, alpha=aug_alpha)
 
     if ws > 1:
         fs.cu_dist_()
@@ -181,6 +201,13 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=-1)
     parser.add_argument('--use_dist_sampler', default=False, action='store_true')
     parser.add_argument('--prefetch_factor', type=int, default=-1)
+
+    parser.add_argument('--aug_latent_dim', default=10, type=int, help="latent dimension")
+    parser.add_argument("--aug_alpha", default=0.2, type=float, help="triplet loss hyperparameter")
+    parser.add_argument("--aug_noise", default=50, type=int, help="noise dimension")
+    parser.add_argument("--aug_wts", default=[1, 0.5, 0.1, 0.5], type=list, help="weights of the augmenter loss")
+    parser.add_argument("--vae_after", default=10, type=int, help="number of epochs to train VAE after training the model")
+
     args = fs.make_args(parser)
     
     ws = fs.ct_gpu_args(args)
