@@ -406,7 +406,7 @@ class cpl_mixVAE:
         fc_mu = fc_mu.to(self.device)
         fc_sigma = fc_sigma.to(self.device)
         f6_mask = f6_mask.to(self.device)
-        batch_size = train_loader.batch_size
+        B = train_loader.batch_size
 
         if self.init:
             print("Start training ...")
@@ -568,12 +568,12 @@ class cpl_mixVAE:
                         'val/rec-loss': validation_rec_loss[epoch]
                     })
 
-                if self.save and (epoch > 0) and (epoch % 1000 == 0):
+                if self.save and (epoch > 0) and (epoch % 10000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{epoch}.pth'
                     torch.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
 
                     
-                    predicted_label = np.zeros((self.n_arm, len(train_zcat[0] * self.batch_size)))
+                    predicted_label = np.zeros((self.n_arm, len(train_zcat[0] * B)))
                     for arm in range(self.n_arm):
                         predicted_label[arm] = np.concatenate(train_zcat[arm])
 

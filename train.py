@@ -191,8 +191,9 @@ if __name__ == "__main__":
     ws = fs.ct_gpu_args(args)
     fs.prn(f'ws: {ws}')
     if ws > 1:
-        args = update_args(args, addr=fs.get_free_addr(), 
-                           port=fs.get_free_port(args.addr), 
+        addr = fs.get_free_addr()
+        args = update_args(args, addr=addr, 
+                           port=fs.get_free_port(addr), 
                            num_workers=fs.count_num_workers(args),
                            gpus=ws, prefetch_factor=fs.get_prefetch_factor(args))
         fs.prn(args)
