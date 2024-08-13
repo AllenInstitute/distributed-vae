@@ -415,7 +415,7 @@ class cpl_mixVAE:
         if self.init:
             print("training...")
             epoch_time = []
-            
+
             for epoch in trange(n_epoch):
                 train_loss_val = th.zeros(2, device=rank)
                 train_jointloss_val = th.zeros(1, device=rank)
@@ -501,8 +501,6 @@ class cpl_mixVAE:
                     recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') \
                                 + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
 
-                    # aug_loss_ = loss_fn(gen_loss_, triplet_loss_, F.mse_loss(z1, z2), recon_loss_)
-                    # # aug_loss_ = triplet_loss(gen_kiss, triplet_loss, F.mse)
                     aug_loss_ = lms[0] * gen_loss_ + \
                                 lms[1] * triplet_loss_ + \
                                 lms[2] * F.mse_loss(z1, z2) + \
