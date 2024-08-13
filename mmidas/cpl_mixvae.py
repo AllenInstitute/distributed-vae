@@ -65,9 +65,6 @@ def make_pbar(loader, rank, *funs):
     else:
         return loader
 
-def count_batches(loader):
-    return len(loader)
-
 def is_tensor(obj):
     return isinstance(obj, torch.Tensor)
 
@@ -217,7 +214,7 @@ class cpl_mixVAE:
             self.aug_param = self.aug_model['parameters']
             
             if load_weights:
-                print('loadng weights...')
+                print('loading weights...')
                 self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
                                 latent_dim=self.aug_param['num_z'],
                                 input_dim=self.aug_param['n_features'])
@@ -364,9 +361,6 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
-    def augment(self, augmenter, x):
-        return augmenter(x, self.noise)[1]
-
     def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -468,9 +462,11 @@ class cpl_mixVAE:
                     for arm in range(self.n_arm):
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
 
+                num_batches = len(train_loader)
+                assert batch_indx + 1 == len(train_loader)
                 print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Distance: {:.4f}, '.format(
-                    epoch, train_loss_val[0].data.item() / (batch_indx + 1), train_loss_rec[0].data.item() / (batch_indx + 1), train_loss_rec[1].data.item() / (batch_indx + 1), 
-                     train_dqc.data.item() / (batch_indx + 1)))
+                    epoch, train_loss_val[0].data.item() / num_batches, train_loss_rec[0].data.item() / num_batches, train_loss_rec[1].data.item() / num_batches, 
+                     train_dqc.data.item() / num_batches))
 
                 if ws > 1:
                     dist.all_reduce(train_loss_val, op=dist.ReduceOp.SUM)
@@ -483,17 +479,16 @@ class cpl_mixVAE:
                     # dist.all_reduce(var_min, op=dist.ReduceOp.SUM)
 
                 train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
-                # train_loss_ = train_loss_ / (batch_indx + 1)
-                train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
+                train_loss_joint[epoch] = train_jointloss_val / num_batches
                 train_distance[epoch] = train_dqc / train_loss_val[1]
-                train_entropy[epoch] = entr / (batch_indx + 1)
-                train_log_distance[epoch] = log_dqc / (batch_indx + 1)
-                train_minVar[epoch] = var_min / (batch_indx + 1)
+                train_entropy[epoch] = entr / num_batches
+                train_log_distance[epoch] = log_dqc / num_batches
+                train_minVar[epoch] = var_min / num_batches
 
                 for arm in range(self.n_arm):
                     train_recon[arm, epoch] = train_loss_rec[arm] / train_loss_val[1]
                     for cc in range(self.n_categories):
-                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / (batch_indx + 1)
+                        train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / num_batches
 
                 _time = time.time() - t0
                 print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '

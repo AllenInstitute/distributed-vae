@@ -37,13 +37,14 @@ def parse_toml_(toml_file, sub_file='mouse_smartseq', args=None, trained=False):
     saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name
     return pmap(map(lambda kv: (kv[0], str(kv[1])), {
         'data': data_file,
-        'saving': _make_saving_folders_(str(saving_folder)),
+        'saving': saving_folder,
         'aug': config['paths']['main_dir'] / config[sub_file]['aug_model'],
         'trained': config['paths']['main_dir'] / config[sub_file]['trained_model'] if trained else ''
     }.items()))
 
 def make_folders_(saving_folder):
-    assert not os.path.exists(saving_folder), saving_folder
+    # assert not os.path.exists(saving_folder), saving_folder
+    print(f' -- making folders: {saving_folder} -- ')
     os.makedirs(saving_folder, exist_ok=True)
     os.makedirs(saving_folder + '/model', exist_ok=True)
 
@@ -72,7 +73,7 @@ def main(r, ws, args):
 
     # Load configuration paths
     cfg = parse_toml_('pyproject.toml', 'mouse_smartseq', args, trained=False)
-    # make_folders_(cfg.saving)
+    make_folders_(cfg.saving)
 
     # Load data
     data_dict = load_data(datafile=cfg.data)
@@ -86,15 +87,22 @@ def main(r, ws, args):
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
-    alldata_loader, train_loader, validation_loader, test_loader = cplMixVAE.get_dataloader(dataset=data_dict['log1p'],
-                                                                                             label=data_dict['cluster'],
-                                                                                             batch_size=batch_size,
-                                                                                             n_aug_smp=0,
-                                                                                             fold=fold,
-                                                                                             deterministic=False,
-                                                                                             world_size=ws,
-                                                                                             use_dist_sampler=use_dist_sampler,
-                                                                                             rank=r)
+    train_loader, test_loader, alldata_loader = get_loaders(dataset=data_dict['log1p'],
+                                                            seed = seed,
+                                                            batch_size=batch_size,
+                                                            world_size=ws,
+                                                            rank=r,
+                                                            use_dist_sampler=use_dist_sampler)
+
+    # alldata_loader, train_loader, validation_loader, test_loader = cplMixVAE.get_dataloader(dataset=data_dict['log1p'],
+    #                                                                                          label=data_dict['cluster'],
+    #                                                                                          batch_size=batch_size,
+    #                                                                                          n_aug_smp=0,
+    #                                                                                          fold=fold,
+    #                                                                                          deterministic=False,
+    #                                                                                          world_size=ws,
+    #                                                                                          use_dist_sampler=use_dist_sampler,
+    #                                                                                          rank=r)
 
     # Initialize the model with specified parameters
     cplMixVAE.init_model(n_categories=n_categories,

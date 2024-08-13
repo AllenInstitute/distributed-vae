@@ -201,7 +201,7 @@ def _get_loaders(dataset, rank, world_size, label=[], seed=None, batch_size=128,
     return train_loader, test_loader
 
 
-def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9):
+def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9, use_dist_sampler=False, world_size=1, rank=0):
     if len(label) > 0:
         train_ind, val_ind, test_ind = [], [], []
         for ll in np.unique(label):
@@ -226,19 +226,28 @@ def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9):
     #                           shuffle=True, drop_last=True, 
     #                           pin_memory=True, num_workers=8,
     #                           persistent_workers=True, prefetch_factor=4)
+    if world_size > 1 and use_dist_sampler:
+        train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
+    else:
+        train_sampler = None
     train_loader = DataLoader(train_data, batch_size=batch_size, 
                         shuffle=True, drop_last=True, 
-                        pin_memory=True)
+                        pin_memory=True, persistent_workers=True, num_workers=2, sampler=train_sampler)
 
     test_set_torch = torch.FloatTensor(test_set)
     test_ind_torch = torch.FloatTensor(test_ind)
     test_data = TensorDataset(test_set_torch, test_ind_torch)
-    test_loader = DataLoader(test_data, batch_size=1, shuffle=True, drop_last=False, pin_memory=True)
+    if world_size > 1 and use_dist_sampler:
+        test_sampler = DistributedSampler(test_data, rank=rank, num_replicas=world_size, shuffle=True)
+    else:
+        test_sampler = None
+    test_loader = DataLoader(test_data, batch_size=1, shuffle=False, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=2,
+                            sampler=test_sampler)
     # test_loader = DataLoader(test_data, batch_size=1, shuffle=True, drop_last=False, pin_memory=True, num_workers=8, persistent_workers=True, prefetch_factor=4)
 
     data_set_troch = torch.FloatTensor(dataset)
     all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
     all_data = TensorDataset(data_set_troch, all_ind_torch)
-    alldata_loader = DataLoader(all_data, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True)
+    alldata_loader = DataLoader(all_data, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=2)
 
     return train_loader, test_loader, alldata_loader
