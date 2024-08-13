@@ -81,10 +81,11 @@ def main(r, ws, args):
     print(f"Number of cells: {data_dict['log1p'].shape[0]}, Number of genes: {data_dict['log1p'].shape[1]}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
+    print(cfg)
     cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
                                  device=r,
-                                 aug_file=aug_file,
-                                 load_weights=False)
+                                 aug_file=cfg.aug,
+                                 load_weights=True)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
