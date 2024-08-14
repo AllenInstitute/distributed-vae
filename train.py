@@ -117,7 +117,7 @@ def main(r, ws, args):
                          temp=temp,
                          hard=hard,
                          tau=tau,
-                         lam=lam,
+                         lam=n_arm,
                          lam_pc=lam_pc,
                          beta=beta,
                          ref_prior=ref_pc,
