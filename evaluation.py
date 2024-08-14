@@ -11,7 +11,7 @@ from sklearn.preprocessing import normalize
 from mmidas.utils.tools import get_paths
 
 
-def make_vae(saving_folder, input_dim, n_categories, state_dim, n_arm, latent_dim):
+def mk_vae(saving_folder, input_dim, n_categories, state_dim, n_arm, latent_dim):
   vae = cpl_mixVAE(saving_folder=saving_folder, device='cpu')
   vae.init_model(n_categories=n_categories,
                      state_dim=state_dim,
@@ -21,7 +21,7 @@ def make_vae(saving_folder, input_dim, n_categories, state_dim, n_arm, latent_di
   return vae
 
 
-def make_mi_mat(c_prob, targets):
+def mk_mi_mat(c_prob, targets):
   mi_ind = []
 
   categories = np.argmax(c_prob, axis=1)
@@ -70,10 +70,8 @@ def main():
   toml_file = 'pyproject.toml'
   sub_file = 'mouse_smartseq'
   config = get_paths(toml_file=toml_file, sub_file=sub_file)
-  dataset = 'mouse_smartseq'
   data_path = config['paths']['main_dir'] / config[sub_file]['data_path']
   data_file = data_path / config[sub_file]['anndata_file']
-  # data_file=Path(config[dataset]['data_path']) / Path(config[dataset]['anndata_file'])
   data = load_data(datafile=data_file)
 
   trainloader, testloader, all_dataloader = get_loaders(dataset=data['log1p'],
@@ -81,21 +79,20 @@ def main():
   saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path']
   trained_model_folder = config[sub_file]['trained_model']
   saving_folder = str(saving_folder / trained_model_folder)
-  trained_models = glob.glob(saving_folder + '/model/cpl_mixVAE_model_before_*')
 
-  arms = 2
+  arms = 10
   n_categories = 92
   state_dim = 2
   latent_dim = 10
-  trained_models = glob.glob(saving_folder + '/model/cpl_mixVAE_model_before_*')
   
-  cplMixVAE = make_vae(saving_folder, input_dim=data['log1p'].shape[1],
+  cplMixVAE = mk_vae(saving_folder, input_dim=data['log1p'].shape[1],
                        n_categories=n_categories, state_dim=state_dim, n_arm=arms, latent_dim=latent_dim)
   cplMixVAE.variational = False 
-  selected_model = glob.glob(saving_folder + '/model/cpl_mixVAE_model_before_*')[0]
+  selected_model = sorted(glob.glob(saving_folder + '/model/cpl_mixVAE_model_**'))[-1]
+  print('model:', selected_model)
   outcome = summarize_inference(cplMixVAE, selected_model, all_dataloader)
 
-  avg_mis = [avg_mi(make_mi_mat(outcome['c_prob'][a], data['c_onehot'].astype(int))) 
+  avg_mis = [avg_mi(mk_mi_mat(outcome['c_prob'][a], data['c_onehot'].astype(int))) 
               for a in range(arms)]
   
   print(avg_consensus(outcome['pred_label'][0]))
