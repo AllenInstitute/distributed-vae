@@ -359,7 +359,7 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
 
-    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, lms, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1, netA=None, netD=None, lr=1e-3, vae_after=0, alpha=0):
+    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, lms, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1, netA=None, netD=None, lr=1e-3, vae_after=0, alpha=0, no_aug=10000):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
         pcikle used for saving the file
@@ -441,81 +441,82 @@ class cpl_mixVAE:
                     data_bin = th.where(data > self.eps, 1., 0.) # TODO: check this eps
                     d_idx = d_idx.to(int)
                         
-                    # augmenter training
-                    netA.train()
-                    netD.train()
+                    if epoch < no_aug:
+                        # augmenter training
+                        netA.train()
+                        netD.train()
 
-                    opt_disc.zero_grad()
-                    label = th.full((B,), REAL, device=rank)
-                    _, probs_real = netD(data_bin)
-                    loss_real = F.binary_cross_entropy(probs_real.view(-1), label)
+                        opt_disc.zero_grad()
+                        label = th.full((B,), REAL, device=rank)
+                        _, probs_real = netD(data_bin)
+                        loss_real = F.binary_cross_entropy(probs_real.view(-1), label)
 
-                    if F.relu(loss_real - np.log(2) / 2) > 0:
-                        loss_real.backward()
-                        step_disc = True
-                    else:
-                        step_disc = False
+                        if F.relu(loss_real - np.log(2) / 2) > 0:
+                            loss_real.backward()
+                            step_disc = True
+                        else:
+                            step_disc = False
 
-                    label.fill_(FAKE)
-                    _, fake_data1 = netA(data, batched=False, noise=True, scale=1.)
-                    _, fake_data2 = netA(data, batched=False, noise=False, scale=1.)
-                    if netA.mode == 'ZINB':
-                        p_bern_1 = data_bin * fake_data1[:, netA.input_dim:] # TODO: check this
-                        p_bern_2 = data_bin * fake_data2[:, netA.input_dim:]
+                        label.fill_(FAKE)
+                        _, fake_data1 = netA(data, batched=False, noise=True, scale=1.)
+                        _, fake_data2 = netA(data, batched=False, noise=False, scale=1.)
+                        if netA.mode == 'ZINB':
+                            p_bern_1 = data_bin * fake_data1[:, netA.input_dim:] # TODO: check this
+                            p_bern_2 = data_bin * fake_data2[:, netA.input_dim:]
 
-                        fake_data1_bin = th.bernoulli(p_bern_1)
-                        fake_data2_bin = th.bernoulli(p_bern_2)
-                        fake_data = fake_data2[:, :netA.input_dim] * data_bin
-                    else:
-                        fake_data1_bin = th.zeros_like(fake_data1)
-                        fake_data2_bin = th.zeros_like(fake_data2)
-                        fake_data1_bin[fake_data1 > self.eps] = 1.
-                        fake_data2_bin[fake_data2 > self.eps] = 1.
-                        fake_data = 1. * fake_data2 # TODO
+                            fake_data1_bin = th.bernoulli(p_bern_1)
+                            fake_data2_bin = th.bernoulli(p_bern_2)
+                            fake_data = fake_data2[:, :netA.input_dim] * data_bin
+                        else:
+                            fake_data1_bin = th.zeros_like(fake_data1)
+                            fake_data2_bin = th.zeros_like(fake_data2)
+                            fake_data1_bin[fake_data1 > self.eps] = 1.
+                            fake_data2_bin[fake_data2 > self.eps] = 1.
+                            fake_data = 1. * fake_data2 # TODO
 
-                    _, probs_fake1 = netD(fake_data1_bin.detach())
-                    _, probs_fake2 = netD(fake_data2_bin.detach())
-                    loss_fake = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
+                        _, probs_fake1 = netD(fake_data1_bin.detach())
+                        _, probs_fake2 = netD(fake_data2_bin.detach())
+                        loss_fake = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
 
-                    if F.relu(loss_fake - np.log(2) / 2) > 0:
-                        loss_fake.backward()
-                        step_disc = True
+                        if F.relu(loss_fake - np.log(2) / 2) > 0:
+                            loss_fake.backward()
+                            step_disc = True
 
-                    D_loss = loss_real + loss_fake
-                    
-                    if step_disc:
-                        opt_disc.step()
-                    else:
-                        n_adv += 1
+                        D_loss = loss_real + loss_fake
+                        
+                        if step_disc:
+                            opt_disc.step()
+                        else:
+                            n_adv += 1
 
-                    opt_aug.zero_grad()
-                    z1, probs_fake1 = netD(fake_data1_bin)
-                    z2, probs_fake2 = netD(fake_data2_bin)
-                    label.fill_(REAL)
-                    gen_loss_ = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
-                    triplet_loss_ = TripletLoss(data_bin.view(B, -1), 
-                                                fake_data1_bin.view(B, -1), 
-                                                fake_data2_bin.view(B, -1), 
-                                                alpha, 'BCE')
+                        opt_aug.zero_grad()
+                        z1, probs_fake1 = netD(fake_data1_bin)
+                        z2, probs_fake2 = netD(fake_data2_bin)
+                        label.fill_(REAL)
+                        gen_loss_ = (F.binary_cross_entropy(probs_fake1.view(-1), label) + F.binary_cross_entropy(probs_fake2.view(-1), label)) / 2
+                        triplet_loss_ = TripletLoss(data_bin.view(B, -1), 
+                                                    fake_data1_bin.view(B, -1), 
+                                                    fake_data2_bin.view(B, -1), 
+                                                    alpha, 'BCE')
 
-                    recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') \
-                                + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
+                        recon_loss_ = F.mse_loss(fake_data, data, reduction='mean') \
+                                    + F.binary_cross_entropy(fake_data2_bin, data_bin) / 2
 
-                    aug_loss_ = lms[0] * gen_loss_ + \
-                                lms[1] * triplet_loss_ + \
-                                lms[2] * F.mse_loss(z1, z2) + \
-                                lms[3] * recon_loss_
+                        aug_loss_ = lms[0] * gen_loss_ + \
+                                    lms[1] * triplet_loss_ + \
+                                    lms[2] * F.mse_loss(z1, z2) + \
+                                    lms[3] * recon_loss_
 
-                    aug_loss_.backward()
-                    opt_aug.step()
+                        aug_loss_.backward()
+                        opt_aug.step()
 
-                    aug_loss += aug_loss_.data.item()
-                    disc_loss += D_loss.data.item()
-                    gen_loss += gen_loss_.data.item()
-                    recon_loss += recon_loss_.data.item()
-                    triplet_loss += triplet_loss_.data.item()
-                    aug_losses.append(aug_loss)
-                    disc_losses.append(disc_loss)
+                        aug_loss += aug_loss_.data.item()
+                        disc_loss += D_loss.data.item()
+                        gen_loss += gen_loss_.data.item()
+                        recon_loss += recon_loss_.data.item()
+                        triplet_loss += triplet_loss_.data.item()
+                        aug_losses.append(aug_loss)
+                        disc_losses.append(disc_loss)
 
 
                     if epoch > vae_after:

@@ -112,7 +112,7 @@ def main(r, ws, args):
                          temp=temp,
                          hard=hard,
                          tau=tau,
-                         lam=lam,
+                         lam=n_arm,
                          lam_pc=lam_pc,
                          beta=beta,
                          ref_prior=ref_pc,
@@ -156,7 +156,7 @@ def main(r, ws, args):
                                  max_prun_it=max_prun_it,
                                  netA=netA, netD=netD, lr=lr,
                                  lms=parameters['lambda'],
-                                 run=run, ws=ws, rank=r, vae_after=vae_after, alpha=aug_alpha)
+                                 run=run, ws=ws, rank=r, vae_after=vae_after, alpha=aug_alpha, no_aug=no_aug)
 
     if ws > 1:
         fs.cu_dist_()
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     parser.add_argument("--beta",  default=1, type=float, help="KL regularization parameter")
     parser.add_argument("--lam",  default=1, type=float, help="coupling factor")
     parser.add_argument("--latent_dim", default=10, type=int, help="latent dimension")
-    parser.add_argument("--n_epoch", default=50000, type=int, help="Number of epochs to train")
+    parser.add_argument("--n_epoch", default=100000, type=int, help="Number of epochs to train")
     parser.add_argument("--n_epoch_p", default=0, type=int, help="Number of epochs to train pruning algorithm")
     parser.add_argument("--min_con", default=.99, type=float, help="minimum consensus")
     parser.add_argument("--max_prun_it", default=0, type=int, help="minimum number of samples in a class")
@@ -206,7 +206,8 @@ if __name__ == "__main__":
     parser.add_argument("--aug_alpha", default=0.2, type=float, help="triplet loss hyperparameter")
     parser.add_argument("--aug_noise", default=50, type=int, help="noise dimension")
     parser.add_argument("--aug_wts", default=[1, 0.5, 0.1, 0.5], type=list, help="weights of the augmenter loss")
-    parser.add_argument("--vae_after", default=10, type=int, help="number of epochs to train VAE after training the model")
+    parser.add_argument("--vae_after", default=1000, type=int, help="number of epochs to train VAE after training the model")
+    parser.add_argument("--no_aug", default=10000, type=bool, help="disable augmentation after this many epochs")
 
     args = fs.make_args(parser)
     
