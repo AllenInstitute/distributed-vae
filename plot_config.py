@@ -60,12 +60,7 @@ def gen_configs(base, **kw):
 def init_module_(base, **kw):
     foreach(lambda k, v: globals().__setitem__(k, v), gen_configs(base, **kw).items())
 
-    # for k, v in gen_configs(base, **kw).items():
-    #     globals()[k] = v
-
 init_module_(BASE, gpus=GPUS, model=MODELS, sharding_strategy=STRATS)
-
-# assert 'ONE_GPU_SHALLOW_FULL' in globals()
 
 
 

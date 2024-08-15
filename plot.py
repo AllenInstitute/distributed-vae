@@ -1,7 +1,7 @@
 import os
 import re
-from functools import lru_cache, reduce as red
-from itertools import accumulate as acc
+from functools import lru_cache, reduce as rdc
+from itertools import accumulate as acm
 from collections import defaultdict, OrderedDict
 
 import torch as T
@@ -16,54 +16,69 @@ def some(f, xs):
 def starsome(f, xs):
     return next((x for x in xs if f(*x)), None)
 
-def parse_batchnorm(text):
-    return (lambda x: x.group(1) if x else None)(re.search(r'use_batchnorm=(True|False)', text))
+def reUnwrap(r):
+    return r.group(1) if r else None
+
+def reSearch(r, s):
+    return reUnwrap(re.search(r, s))
+
+def parseBatchnorm(s):
+    return reSearch(r'use_batchnorm=(True|False)', s)
 
 @lru_cache(maxsize=None)
-def parse_run(text):
-    return (lambda x: x.group(1) if x else None)(re.search(r'\[r0\] saved to toy-runs/(r\d+)', text))
+def parseRun(s):
+    return reSearch(r'\[r0\] saved to toy-runs/(r\d+)', s)
 
-def get_run(pth):
-    return some(lambda f: f.endswith('.pt'), lazy_listdir(pth))
+def runFile(fldr):
+    return some(lambda f: f.endswith('.pt'), seqDir(fldr))
 
-def lazy_listdir(pth):
-    return (f.name for f in os.scandir(pth))
+def seqDir(fldr):
+    return (f.name for f in os.scandir(fldr))
+
+def getRun(pth):
+    return parseRun(fileToStr(pth))
 
 @lru_cache(maxsize=None)
-def file_to_str(pth):
+def fileToStr(pth):
     with open(pth) as f: return f.read()
 
 def logs_of(run, logs='mnist-logs'):
-    return filter(lambda f: parse_run(file_to_str(f'{logs}/{f}')) == run, lazy_listdir(logs))
+    return filter(lambda f: getRun(f'{logs}/{f}') == run, seqDir(logs))
+
+def outFiles(logs='mnist-logs'):
+    return filter(lambda f: f.endswith('.out'), seqDir(logs))
+
+def noNone(assocs):
+    return filter(lambda x: x[1] is not None, assocs)
+
+def mapCons(f, xs):
+    return map(lambda x: (x, f(x)), xs)
 
 @lru_cache(maxsize=None)
-def get_runs(logs='mnist-logs'):
-    return pmap(filter(lambda x: x[1] is not None, 
-                  map(lambda f: (f, parse_run(file_to_str(f'mnist-logs/{f}'))),
-                      filter(lambda f: f.endswith('.out'), lazy_listdir(logs)))))
+def runFiles(logs='mnist-logs'):
+    return pmap(noNone(mapCons(lambda f: getRun(f'{logs}/{f}'), outFiles(logs))))
 
 @lru_cache(maxsize=None)
-def inv(dct):
+def dctInv(dct):
     return {v: k for k, v in dct.items()}
 
-def no_ext(text):
+def noExt(text):
     return text.split('.')[0]
 
-def parse_title(text, delim='_', kw=None):
-    _it = inv(kw).items()
-    return pmap(map(lambda x: (lambda kv: (kv[1], x[len(kv[0]):]))(some(lambda kv: x.startswith(kv[0]),_it)),
-               no_ext(text).split(delim)[1:]))
+def parseTitle(t, env=None):
+    def _parse(t, sep):
+        return noExt(t).split(sep)[1:]
 
-def is_config(dct):
-    ks = ['model', 'batch_size', 'num_workers', 'epochs', 'gpus',
-          'use_dist_sampler', 'sharding_strategy', 'mixed_precision',
-          'sync_module_states', 'use_compilation', 'use_orig_params',
-          'use_batchnorm']
-    return all(k in dct for k in ks)
+    def _get_evaluator(x, env):
+        return some(lambda kv: x.startswith(kv[0]), env.items())
 
-def parse_title_mnist(text):
-    delim = '_'
-    kw = pmap({
+    def _eval(x, env):
+        return (lambda kv: (kv[1], x[len(kv[0]):]))(_get_evaluator(x, env))
+
+    return pmap(map(partial(_eval, env=dctInv(env)), _parse(t, env.sep)))
+
+def parseTitleMNIST(t):
+    env = pmap({
         'model': 'MODEL',
         'batch_size': 'B',
         'num_workers': 'WORK',
@@ -75,8 +90,15 @@ def parse_title_mnist(text):
         'sync_module_states': 'SYNC',
         'use_compilation': 'COMP',
         'use_orig_params': 'ORIG',
+        'sep': '_'
     })
-    return parse_title(text, delim, kw)
+    return parseTitle(t, env)
+
+def filterEq(a, xs):
+    return filter(lambda x: x == a, xs)
+
+def filterEqSnd(a, xs):
+    return filter(lambda x: x[1] == a, xs)
 
 def _plot(*metrics, dirn, style='line', title=None, save=None, drop_first=2,
          scale=1, ylabel=None, use_average=False, **kw):
@@ -91,7 +113,7 @@ def _plot(*metrics, dirn, style='line', title=None, save=None, drop_first=2,
         
         for r, name in kw.items():
             pth = f'{dirn}/{r}'
-            run_file = get_run(pth)
+            run_file = runFile(pth)
             data = T.load(f'{pth}/{run_file}', map_location='cpu')
             y = scale * data[metric]
             if isinstance(y, (np.ndarray, T.Tensor, list)):
@@ -144,26 +166,38 @@ def _plot(*metrics, dirn, style='line', title=None, save=None, drop_first=2,
     if save:
         plt.savefig(save)
 
-def is_run(s):
+def isRun(s):
     return s.startswith('r') and s[1:].isdigit()
 
 @lru_cache(maxsize=None)
-def make_config(run, run_dir='toy-runs', log_dir='mnist-logs'):
-    return parse_title_mnist(get_run(f'{run_dir}/{run}')).set('use_batchnorm', 
-                    parse_batchnorm(file_to_str(f'{log_dir}/{inv(get_runs(log_dir))[run]}')))
+def mkCfg(run, run_dir='toy-runs', log_dir='mnist-logs'):
+    return parseTitleMNIST(runFile(f'{run_dir}/{run}')).set('use_batchnorm', 
+                    parseBatchnorm(fileToStr(f'{log_dir}/{dctInv(runFiles(log_dir))[run]}')))
 
-def find_runs(config, run_dir='toy-runs', log_dir='mnist-logs'):
-    return filter(lambda f: make_config(f, run_dir=run_dir, log_dir=log_dir) == config,
-                  filter(is_run, lazy_listdir(run_dir)))
+def fsts(xs):
+    return map(lambda x: x[0], xs)
 
+# warning: bug here in call to mkCfg
+def findRuns(config, run_dir='toy-runs', log_dir='mnist-logs'):
+    return fsts(filterEqSnd(config, mapCons(mkCfg, filter(isRun, seqDir(run_dir)))))
+
+def thk0(x):
+    return lambda _: x
+
+def mapV(f, assocs):
+    return map(lambda x: (x[0], f(x[1])), assocs)
+
+def conj(x, xs):
+    return xs.append(x)
+
+def swap(fn):
+    return lambda x, y: fn(y, x)
 
 def plot(*metrics, dirn='toy-runs', style='line', title=None, save=None, drop_first=2,
          scale=1, ylabel=None, **kw):
-    _kw = acc(map(lambda x: map(lambda r: (r, x[0]), x[1]),
-                  map(lambda x: (x[0], find_runs(x[1])), kw.items())),
-              lambda acc, x: red(lambda bcc, y: bcc.append(y), x, acc),
+    _kw = acm(map(lambda x: mapCons(thk0(x[0]), x[1]), mapV(findRuns, kw.items())),
+              lambda acc, x: rdc(swap(conj), x, acc),
               initial=v())
     _plot(*metrics, dirn=dirn, style=style, title=title, save=save,
           drop_first=drop_first, scale=scale, ylabel=ylabel, 
           **dict(list(_kw)[-1]))
-# list(find_runs(TWO_GPUS_SHALLOW_FULL.set('use_dist_sampler', 'False')))
