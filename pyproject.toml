@@ -25,7 +25,7 @@ ref_gene_file = "genes_SS_ALM-VISp.csv"
 data_path = "data/"
 saving_path = "mmidas-results/"
 aug_model = "smartseq_augmenter/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
-trained_model = "Run1_K92_S2_AUGTrue_LR0.001_A5_B5000_E500000_Ep0"
+trained_model = "Run1_K92_S2_AUGTrue_LR0.001_A10_B5000_E500000_Ep0"
 
 # -----------------------------------------------------------------------------
 [mouse_ctx_10x]

@@ -2073,9 +2073,9 @@ class cpl_mixVAE:
 
                     recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c=prior_c, eval=True, mask=pruning_mask)
                     loss, loss_arms, loss_joint, _, dist_z, d_qz, _, _, loglikelihood = self.model.loss(recon, p_x, r_x, trans_data, mu, log_sigma, z_category, z_smp, c_bin)
-                    total_loss_val.append(loss.data.item())
-                    total_dist_z.append(dist_z.data.item())
-                    total_dist_qz.append(d_qz.data.item())
+                    total_loss_val.append(loss.data.item() if isinstance(loss, torch.Tensor) else loss)
+                    total_dist_z.append(dist_z.data.item() if isinstance(dist_z, torch.Tensor) else dist_z)
+                    total_dist_qz.append(d_qz.data.item() if isinstance(d_qz, torch.Tensor) else d_qz)
 
                     if self.ref_prior:
                         predicted_label[0, i * batch_size:min((i + 1) * batch_size, max_len)] = np.argmax(c_p[data_idx, :], axis=1) + 1

@@ -88,7 +88,10 @@ def summarize_inference(cpl_mixVAE, files, data, saving_folder=''):
                 AvsB.append(armA_vs_armB)
                 consensus.append(armA_vs_armB_norm)
 
-        n_pruned.append(len(nprune_indx))
+        # TODO: check
+        if n_arm == 1:
+            nprune_indx = np.where(np.isin(range(n_categories), prune_indx[i]) == False)[0]
+        n_pruned.append(list(range(n_categories)))
         plt.close()
 
     data_dic = {}

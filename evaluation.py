@@ -45,10 +45,13 @@ def avgMI(A):
 def avg_consensus(A): 
   return {
     'all': _avg_consensus_all(A).item(),
-    'pairwise': _avg_consensus(A).item(),
+    'pairwise': (lambda x: x.item() if isinstance(x, (np.ndarray, np.float64)) else x)(_avg_consensus(A))
   }
 
 def _avg_consensus(A):
+  # TODO
+  if A.shape[0] == 1:
+    return 1.
   total = 0.
   n = 0
   for i in range(A.shape[0]):
@@ -62,7 +65,10 @@ def _avg_consensus_all(A):
   return np.mean([sum(np.abs(np.diff(A[:, i]))) == 0 for i in range(A.shape[1])])
 
 def parseEpoch(s):
-  return int(noExt(s).split('_epoch_')[-1])
+  try:
+    return int(noExt(s).split('_epoch_')[-1])
+  except:
+    return s
 
 def updtK(dct, k, fn, l):
   return dct.set(l, fn(dct[k]))
@@ -89,7 +95,7 @@ def main():
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 5,
+    'arms': 10,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
