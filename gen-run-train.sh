@@ -21,7 +21,7 @@ cat << EOF > $FILE
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
 #SBATCH -e mmidas-logs/mmidas_%j.err
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 
 source activate mdist-mmidas
 

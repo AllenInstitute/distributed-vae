@@ -10,4 +10,4 @@
 
 source activate mdist-mmidas
 
-python train.py --n_arm 1 --use-wandb --gpus 1 --n_epoch 20000
+python train.py --n_arm 1 --use-wandb --gpus 1 --n_epoch 50000

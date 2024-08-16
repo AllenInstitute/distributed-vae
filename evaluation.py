@@ -1,65 +1,62 @@
 import glob
 from pyrsistent import pmap
-from functools import lru_cache
 
 import numpy as np
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.dataloader import load_data, get_loaders
 from mmidas.eval_models import summarize_inference
-from train import parse_toml_
 from sklearn.metrics.cluster import adjusted_mutual_info_score
-from sklearn.preprocessing import normalize
 from mmidas.utils.tools import get_paths
+from tqdm import trange
 
 from plot import noExt, mapV
 
-@lru_cache(maxsize=None)
-def mkVAE(saving_folder, input_dim, n_categories, state_dim, n_arm, latent_dim):
+def mkVAE(saving_folder, input_dim, C, state_dim, arms, latent_dim):
   vae = cpl_mixVAE(saving_folder=saving_folder, device='cpu')
-  vae.init_model(n_categories=n_categories,
+  vae.init_model(n_categories=C,
                      state_dim=state_dim,
                      input_dim=input_dim,
                      lowD_dim=latent_dim,
-                     n_arm=n_arm)
+                     n_arm=arms)
+  vae.variational = False
   return vae
 
-def mkMI(c_prob, targets):
-  categories = np.argmax(c_prob, axis=1)
-  uniq_categories = np.unique(categories)
-  model_order = np.shape(uniq_categories)[0]
-  n_cluster = len(np.unique(np.argmax(targets, axis=-1)))
-  prediction = np.zeros(len(categories))
-
-  mi_mat = np.zeros((n_cluster, model_order))
-
-  for ic, c in enumerate(uniq_categories):
-      tmp_idx = np.where(categories == c)[0]
-      prediction[tmp_idx] = ic
+def mkMI(probs, targets):
+  preds = np.argmax(probs, axis=1)
+  uniq = np.unique(preds)
   
-  for c in range(model_order):
+  prediction = np.zeros(len(preds))
+  for i, c in enumerate(uniq):
+      prediction[np.where(preds == c)[0]] = i
+  
+  mi = np.zeros((len(np.unique(np.argmax(targets, axis=-1))), 
+                 np.shape(uniq)[0]))
+  for c in trange(np.shape(mi)[1]):
       per_c_label = np.zeros(len(targets))
       per_c_label[prediction == c] = 1
-      for f in range(n_cluster):
-          mi_mat[f, c] = adjusted_mutual_info_score(targets[:, f], per_c_label)
-
-  print(mi_mat.shape)
-  return mi_mat
+      for f in range(np.shape(mi)[0]):
+          mi[f, c] = adjusted_mutual_info_score(targets[:, f], per_c_label)
+  print(mi.shape)
+  return mi
 
 def avgMI(A):
- return np.mean(np.max(A, axis=-1))
+ return np.mean(np.max(A, axis=-1)).item()
 
 def avg_consensus(A): 
   return {
-    'all': _avg_consensus_all(A),
-    'pairwise': _avg_consensus(A),
+    'all': _avg_consensus_all(A).item(),
+    'pairwise': _avg_consensus(A).item(),
   }
 
 def _avg_consensus(A):
   total = 0.
+  n = 0
   for i in range(A.shape[0]):
     for j in range(i+1, A.shape[0]):
       total += np.mean(A[i] == A[j])
-  return total / (A.shape[0] * (A.shape[0] - 1) / 2)
+      n += 1
+  assert n == A.shape[0] * (A.shape[0] - 1) / 2
+  return total / n
 
 def _avg_consensus_all(A):
   return np.mean([sum(np.abs(np.diff(A[:, i]))) == 0 for i in range(A.shape[1])])
@@ -70,46 +67,53 @@ def parseEpoch(s):
 def updtK(dct, k, fn, l):
   return dct.set(l, fn(dct[k]))
 
-def mkCfg(tf, sf):
+def parseTOML(tf, sf):
   config = get_paths(toml_file=tf, sub_file=sf)
   _trained = config[sf]['trained_model']
   _saving = config['paths']['main_dir'] / config[sf]['saving_path'] / _trained
-  _cfg = {
+  _fs = {
     'data': config['paths']['main_dir'] / config[sf]['data_path'] / config[sf]['anndata_file'],
     'saving': _saving,
     'trained': _trained,
   }
-  return updtK(pmap(mapV(str, _cfg.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_**', 'pat')
+  return updtK(pmap(mapV(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_**', 'pat')
+
+def lookup(ks, dct):
+  return [dct[k] for k in ks]
 
 def main():
   SEED = 546
   TOML = 'pyproject.toml'
   SUB = 'mouse_smartseq'
-
-  cfg = mkCfg(TOML, SUB)
-
-  data = load_data(datafile=cfg.data)
-
-  _, _, ldr = get_loaders(dataset=data['log1p'], batch_size=5000, seed=SEED)
-
-  arms = 5
-  n_categories = 92
-  state_dim = 2
-  latent_dim = 10
-
-  cplMixVAE = mkVAE(cfg.saving, input_dim=data['log1p'].shape[1],
-                    n_categories=n_categories, state_dim=state_dim, n_arm=arms, latent_dim=latent_dim)
-  cplMixVAE.variational = False 
-  last = sorted(glob.glob(cfg.pat), key=parseEpoch)[-1]
-  print('model:', last)
-  outcome = summarize_inference(cplMixVAE, last, ldr)
-
-  avgMIs = [avgMI(mkMI(outcome['c_prob'][a], data['c_onehot'].astype(int))) 
-              for a in range(arms)]
+  B = 5000
+  DATA = 'log1p'
+  TARGETS = 'c_onehot'
+  CFG = pmap({
+    'arms': 5,
+    'C': 92,
+    'state_dim': 2,
+    'latent_dim': 10,
+  })
   
-  print(avg_consensus(outcome['pred_label'][0]))
-  print(f'avgMIs: {avgMIs}')
+  fs = parseTOML(TOML, SUB)
+  data, targets = lookup([DATA, TARGETS], load_data(fs.data))
 
+  preds = summarize_inference(mkVAE(fs.saving, data.shape[1], **CFG), 
+                              max(glob.glob(fs.pat), key=parseEpoch), 
+                              get_loaders(data, batch_size=B, seed=SEED)[-1])
+
+  avgMIs = [avgMI(mkMI(preds['c_prob'][a], targets.astype(int))) for a in range(CFG.arms)]
+  
+  consensus = avg_consensus(preds['pred_label'][0])
+  res = {
+    'pairwise': consensus['pairwise'],
+    'all': consensus['all'],
+    'mi': avgMIs,
+    'avg_mi': np.mean(avgMIs).item(),
+    'arms': CFG.arms,
+  }
+  np.save(f'evaluation/A{CFG.arms}.npy', res)
+  print(res)
 
 if __name__ == '__main__':
   main()
