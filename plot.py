@@ -63,7 +63,7 @@ def dctInv(dct):
     return {v: k for k, v in dct.items()}
 
 def noExt(text):
-    return text.split('.')[0]
+    return ''.join(text.split('.')[:-1])
 
 def parseTitle(t, env=None):
     def _parse(t, sep):

@@ -461,8 +461,8 @@ class cpl_mixVAE:
 
                 num_batches = len(train_loader)
                 assert batch_indx + 1 == len(train_loader)
-                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Distance: {:.4f}, '.format(
-                    epoch, train_loss_val[0].data.item() / num_batches, train_loss_rec[0].data.item() / num_batches, train_loss_rec[1].data.item() / num_batches, 
+                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Distance: {:.4f}, '.format(
+                    epoch, train_loss_val[0].data.item() / num_batches, train_loss_rec[0].data.item() / num_batches, 
                      train_dqc.data.item() / num_batches))
 
                 if ws > 1:
@@ -488,9 +488,9 @@ class cpl_mixVAE:
                         train_loss_KL[arm, cc, epoch] = train_KLD_cont[arm, cc] / num_batches
 
                 _time = time.time() - t0
-                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Rec_arm_2: {'':.4f}, Joint Loss: {:.4f}, '
+                print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'':.4f}, Joint Loss: {:.4f}, '
                       'Entropy: {:.4f}, Distance: {:.4f}, Min. Var: {:.6f}, Elapsed Time:{:.2f}, '.format(
-                    epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
+                    epoch, train_loss[epoch], train_recon[0, epoch], train_loss_joint[epoch],
                     train_entropy[epoch], train_distance[epoch], train_minVar[epoch], _time))
                 
                 if run:
