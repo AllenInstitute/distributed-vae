@@ -95,7 +95,7 @@ def main():
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 10,
+    'arms': 7,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
