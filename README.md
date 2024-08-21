@@ -34,4 +34,5 @@ The file `fdsp_tutorial.ipynb` is a tutorial that walks through step-by-step on 
 The file `fsdp_tutorial.py` is a Python script containing the same code as the tutorial notebook. This is suitable for running the tutorial code as a job on HPC cluster environments (such as SLURM).
 
 ## TODO
-- [ ] Many...
+- [ ] `sbatch` script for running `fsdp_tutorial.py` on SLURM
+- [ ] Cleanup files in `dist/` directory
