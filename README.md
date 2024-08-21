@@ -10,7 +10,7 @@ To recreate the conda environment used for this project,:
 1. Clone the repo
 ```
 git clone https://github.com/AllenInstitute/distributed-vae.git
-cd Dist_MMIDAS
+cd distributed-vae
 ```
 2. Install `torch` with CUDA >= 2.0 and `tqdm`:
 
