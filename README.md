@@ -3,7 +3,7 @@ Distributed training of multi-arm variational autoencoding networks
 
 ## installation
 
-to recreate the conda environment used for this project, do this: 
+To recreate the conda environment used for this project,: 
 
 1. Clone the repo
 ```
@@ -18,7 +18,7 @@ conda env create -f environment.yml
 ```
 or, just follow the standard instructions for installing `torch` with CUDA >= 2.0 on your machine, as well as `tqdm`. 
 
-3. activate the environment
+3. Activate the environment
 ```
 conda activate your_environment_name
 ```
