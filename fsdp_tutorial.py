@@ -252,3 +252,9 @@ def main(rank, world_size, addr, port):
       print('-' * 100)
 
   cleanup_distributed() # new: cleanup PyTorch's distributed backend to release resources
+
+if __name__ == '__main__':
+  addr = get_free_addr()
+  port = get_free_port(addr)
+  world_size = torch.cuda.device_count()
+  mp.spawn(main, args=(world_size, addr, port), nprocs=world_size) # new: spawn a process on each GPU
