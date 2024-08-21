@@ -1,4 +1,4 @@
-# Dist_MMIDAS
+# distributed-vae
 Distributed training of multi-arm variational autoencoding networks
 
 ## installation
