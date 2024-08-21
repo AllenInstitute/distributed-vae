@@ -16,13 +16,13 @@ cd distributed-vae
 
 You can either recreate the exact conda environment we used for this project (which likely has more packages than you actually need) by:
 ```
-conda env create -f environment.yml
+conda env create -f environment.yml -n dist-mmidas
 ```
 or, just follow the standard instructions for installing `torch` with CUDA >= 2.0 on your machine, as well as `tqdm`. 
 
 3. Activate the environment
 ```
-conda activate your_environment_name
+conda activate dist-mmidas
 ```
 
 ## Quick start
