@@ -1,7 +1,9 @@
 # distributed-vae
-Distributed training of multi-arm variational autoencoding networks
+Distributed training of multi-arm variational autoencoding networks. This repository contains 
+- experiment code for training multi-arm variational autoencoding networks with the fully-sharded data parallelism (FSDP) strategy in PyTorch
+- a tutorial on training using FSDP with some simple models on the MNIST dataset
 
-## installation
+## Installation
 
 To recreate the conda environment used for this project,: 
 
@@ -22,3 +24,11 @@ or, just follow the standard instructions for installing `torch` with CUDA >= 2.
 ```
 conda activate your_environment_name
 ```
+
+## Quick start
+
+The most important part of this repository are the two files `fsdp_tutorial.ipynb` and `fsdp_tutorial.py`. 
+
+The file `fdsp_tutorial.ipynb` is a tutorial that walks through step-by-step on how to use the FSDP training strategy in PyTorch. This is likely what you are looking for. Activate your conda environment (instructions above) and walk through this notebook to learn how to use FSDP in PyTorch.
+
+The file `fsdp_tutorial.py` is a Python script containing the same code as the tutorial notebook. This is suitable for running the tutorial code as a job on cluster environments.
