@@ -32,3 +32,6 @@ The most important part of this repository are the two files `fsdp_tutorial.ipyn
 The file `fdsp_tutorial.ipynb` is a tutorial that walks through step-by-step on how to use the FSDP training strategy in PyTorch. This is likely what you are looking for. Activate your conda environment (instructions above) and walk through this notebook to learn how to use FSDP in PyTorch.
 
 The file `fsdp_tutorial.py` is a Python script containing the same code as the tutorial notebook. This is suitable for running the tutorial code as a job on cluster environments.
+
+## TODO
+- [] Many...
