@@ -8,7 +8,7 @@ import torch as T
 import numpy as np
 import matplotlib.pyplot as plt
 from pyrsistent import pmap, v
-from plot_config import *
+from dist.plot_config import *
 
 def some(f, xs):
     return next((x for x in xs if f(x)), None)

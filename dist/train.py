@@ -13,7 +13,7 @@ from pyrsistent import pmap
 
 import wandb
 
-import fsdp_mnist as fs
+import dist.fsdp_mnist as fs
 
 def is_path(x):
     return isinstance(x, Path)

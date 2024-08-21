@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 
 import wandb
 
-from torch_utils import current_gpu, cpu_count, set_gpu_
+from dist.torch_utils import current_gpu, cpu_count, set_gpu_
 
 def prn(*args, **kw):
   print(*args, **kw)

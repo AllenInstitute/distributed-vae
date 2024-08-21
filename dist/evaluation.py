@@ -9,7 +9,7 @@ from sklearn.metrics.cluster import adjusted_mutual_info_score
 from mmidas.utils.tools import get_paths
 from tqdm import trange
 
-from plot import noExt, mapV
+from dist.plot import noExt, mapV
 
 def mkVAE(saving_folder, input_dim, C, state_dim, arms, latent_dim):
   vae = cpl_mixVAE(saving_folder=saving_folder, device='cpu')

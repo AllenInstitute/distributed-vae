@@ -40,8 +40,8 @@ import wandb
 from tqdm import trange
 
 import mmidas
-from my_utils import conj, try_to_get, pprint, avg, dprint, make_path, random_string, convert, random_of
-from torch_utils import print_available_torch, ResourceLogger, count, take_percent_data, check_not_a100
+from dist.my_utils import conj, try_to_get, pprint, avg, dprint, make_path, random_string, convert, random_of
+from dist.torch_utils import print_available_torch, ResourceLogger, count, take_percent_data, check_not_a100
 
 def start_record_memory_history():
   torch.cuda.memory._start_record_memory_history()

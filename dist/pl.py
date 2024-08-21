@@ -20,7 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 import wandb
 
-from my_utils import convert, avg
+from dist.my_utils import convert, avg
 
 
 class PLNet(L.LightningModule):
