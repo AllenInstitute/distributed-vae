@@ -660,18 +660,8 @@ def main(r, ws, args):
 
     cu_dist_()
 
-def make_args(parser, **kw):
+def make_args(parser):
   return parser.parse_args()
-  # return pmap({
-  #   'batch_size': kw.get('batch_size', 64),
-  #   'test_batch_size': kw.get('test_batch_size', 1000),
-  #   'epochs': kw.get('epochs', 10),
-  #   'lr': kw.get('lr', 1.0),
-  #   'gamma': kw.get('gamma', 0.7),
-  #   'no_cuda': kw.get('no_cuda', False),
-  #   'seed': kw.get('seed', 1),
-  #   'save_model': kw.get('save_model', False),
-  # })
 
 def spawn_(fun, ws, args):
     mp.spawn(fun, args=(ws, args), nprocs=ws, join=True)
