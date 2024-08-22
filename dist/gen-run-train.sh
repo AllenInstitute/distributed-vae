@@ -21,9 +21,9 @@ cat << EOF > $FILE
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
 #SBATCH -e mmidas-logs/mmidas_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 
 source activate mdist-mmidas
 
-python train.py --n_arm $ARMS --use-wandb --gpus 1 --n_epoch $EPOCHS
+python -m dist.train --n_arm $ARMS --use-wandb --gpus 1 --n_epoch $EPOCHS
 EOF

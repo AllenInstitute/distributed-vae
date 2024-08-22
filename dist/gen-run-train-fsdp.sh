@@ -15,7 +15,7 @@ cat << EOF > $FILE
 #!/bin/bash
 #SBATCH -N1
 #SBATCH --gpus=$GPU:$WORLD_SIZE
-#SBATCH -c 16
+#SBATCH -c 32
 #SBATCH --mem=32G
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
@@ -24,5 +24,5 @@ cat << EOF > $FILE
 
 source activate mdist-mmidas
 
-python train.py --n_arm $ARMS --use-wandb --use_dist_sampler --n_epoch $EPOCHS
+python -m dist.train --n_arm $ARMS --use-wandb --use_dist_sampler --n_epoch $EPOCHS
 EOF
