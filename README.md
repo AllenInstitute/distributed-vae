@@ -36,6 +36,3 @@ The file `fsdp_tutorial.py` is a Python script containing the same code as the t
 ## TODO
 - [ ] `sbatch` script for running `fsdp_tutorial.py` on SLURM
 - [ ] Cleanup files in `dist/` directory
-
-## QR Code
-![QR Code](./qr-code.png)
