@@ -5,9 +5,6 @@ import torch
 def current_gpu():
   return torch.cuda.current_device()
 
-def set_gpu_(rank):
-  torch.cuda.set_device(rank)
-
 def cpu_count():
    return torch.get_num_threads()
 

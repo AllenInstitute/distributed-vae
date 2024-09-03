@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -N1
-#SBATCH --gpus=v100:3
-#SBATCH -c 16
+#SBATCH --gpus=a100:1
+#SBATCH -c 32
 #SBATCH --mem=32G
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
@@ -10,4 +10,4 @@
 
 source activate mdist-mmidas
 
-python train.py --n_arm 10 --use-wandb --use_dist_sampler --n_epoch 500000
+python train.py --n_arm 2 --use-wandb --gpus 1 --n_epoch 100000

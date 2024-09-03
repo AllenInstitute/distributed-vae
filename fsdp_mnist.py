@@ -9,10 +9,6 @@ import time
 import os
 
 from pyrsistent import m, v, pmap, pvector, PMap, PVector
-def set_call_(cls, fun):
-    cls.__call__ = fun
-set_call_(PMap, lambda self, x: self[x])
-set_call_(PVector, lambda self, x: self[x])
 from tqdm import tqdm
 import torch
 import torch.distributed as dist
@@ -28,8 +24,6 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
     StateDictType,
 )
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    BackwardPrefetch, CPUOffload)
 from torch.distributed.fsdp.wrap import (enable_wrap,
                                          size_based_auto_wrap_policy, wrap)
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -41,10 +35,7 @@ import matplotlib.pyplot as plt
 
 import wandb
 
-from dist.torch_utils import current_gpu, cpu_count, set_gpu_
-
-def prn(*args, **kw):
-  print(*args, **kw)
+from torch_utils import current_gpu, cpu_count
 
 def is_imported(m):
   return m in globals()
@@ -66,7 +57,7 @@ def set_mode_(model, mode):
   else:
     raise ValueError(f"Unknown mode: {mode}")
 
-def prn_gpu():
+def show_gpu():
   print(f"cuda device: {torch.cuda.current_device()}")
 
 def ct_gpu():
@@ -110,9 +101,6 @@ def mk_to(s):
 def su_pg_(r, ws):
    dist.init_process_group('nccl', rank=r, world_size=ws, 
                            timeout=mk_to(600))
-  
-def cu_pg_():
-    dist.destroy_process_group()
 
 def su_dist_(r, ws, a=None, p=None):
   su_env_(a, p)
@@ -133,17 +121,18 @@ def is_min(op):
 def is_max(op):
   return op == 'max'
 
-def make_reduce_op(op):
-  if is_sum(op):
-    return dist.ReduceOp.SUM
-  elif is_prod(op):
-    return dist.ReduceOp.PRODUCT
-  elif is_min(op):
-    return dist.ReduceOp.MIN
-  elif is_max(op):
-    return dist.ReduceOp.MAX
-  else:
-    raise ValueError(f"Unknown reduce op: {op}")
+def make_reduce_op(op: str):
+  match op:
+    case 'sum':
+      return dist.ReduceOp.SUM
+    case 'product':
+      return dist.ReduceOp.PRODUCT
+    case 'min':
+      return dist.ReduceOp.MIN
+    case 'max':
+      return dist.ReduceOp.MAX
+    case _:
+      raise ValueError(f"Unknown reduce op: {op}")
   
 def all_reduce_(tensor, op='sum'):
   dist.all_reduce(tensor, op=make_reduce_op(op))
@@ -180,9 +169,6 @@ def print_summary(time, model, r):
 
 def make_cuda_event():
   return torch.cuda.Event(enable_timing=True)
-
-def fsdp(*args, **kw):
-  return FSDP(*args, **kw)
 
 def ddp(*args, **kw):
   return DDP(*args, **kw)
@@ -532,7 +518,7 @@ def get_prefetch_factor(args):
 
 def main(r, ws, args):
     set_prn_(r)
-    prn(f"starting...")
+    print(f"starting...")
     su_dist_(r, ws, args.addr, args.port)
     # if is_master(r):
     #     print("warning: changing matmul precision")
@@ -565,7 +551,7 @@ def main(r, ws, args):
 
     train_loader = make_loader(train_data, **train_loader_config)
     test_loader = make_loader(test_data, **test_loader_config)
-    set_gpu_(r)
+    torch.cuda.set_device(rank)
 
     start_event = make_cuda_event()
     end_event = make_cuda_event()
@@ -663,9 +649,6 @@ def main(r, ws, args):
 def make_args(parser):
   return parser.parse_args()
 
-def spawn_(fun, ws, args):
-    mp.spawn(fun, args=(ws, args), nprocs=ws, join=True)
-
 def ct_gpu_args(args):
   if args.gpus == -1:
       return ct_gpu()
@@ -726,14 +709,14 @@ if __name__ == '__main__':
     set_seed_(args.seed)
 
     ws = ct_gpu_args(args)
-    prn(f'ws: {ws}')
+    print(f'ws: {ws}')
     args.addr = get_free_addr()
     args.port = get_free_port(args.addr)
     args.num_workers = count_num_workers(args)
     args.gpus = ws
     args.prefetch_factor = get_prefetch_factor(args)
-    prn(args)
-    spawn_(main, ws, args)
+    print(args)
+    mp.spawn(main, args=(ws, args), nprocs=ws, join=True)
 
 
 

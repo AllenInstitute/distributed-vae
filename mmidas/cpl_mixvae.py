@@ -445,6 +445,7 @@ class cpl_mixVAE:
 
                     loss, loss_rec, loss_joint, entropy, dist_c, d_qc, KLD_cont, min_var_0, loglikelihood = \
                         self.model.loss(recon_batch, p_x, r_x, trans_data, mu, log_var, qc, c, c_bin)
+                    mem: float = torch.cuda.memory_allocated() / 1e9
                     loss.backward()
                     self.optimizer.step()
 
@@ -501,6 +502,7 @@ class cpl_mixVAE:
                         'train/distance': train_distance[epoch],
                         'train/min-var': train_minVar[epoch],
                         'train/time': _time,
+                        'train/mem': mem,
                         **dict(map(lambda x: (f'train/rec-loss{x}', train_recon[x, epoch]), range(self.n_arm))),
                     })
                     

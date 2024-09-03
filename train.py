@@ -4,6 +4,16 @@ import os
 import numpy as np
 import signal
 import torch as th
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    FullStateDictConfig,
+    StateDictType,
+)
 import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
@@ -15,23 +25,26 @@ from mmidas.nn_model import mixVAE_model
 
 import wandb
 
-import dist.fsdp_mnist as utils
+import fsdp_mnist as utils
 
-signal.signal(signal.SIGINT, lambda _, __: utils.cu_dist_())
+signal.signal(signal.SIGINT, lambda _, __: dist.destroy_process_group())
 
-# def mkParser(cfg, delim):
-#     def parser(s):
+class CUDADevice:
+    pass
 
-def parse_toml_(toml_file, sub_file='mouse_smartseq', args=None, trained=False):
+class Dist:
+    pass
+
+def parse_toml_(toml_file: str, sub_file: str, args=None, trained=False):
     def _make_saving_folders_(saving_folder, existing=0):
-        if not os.path.exists(saving_folder + f'_{existing}'):
-            return saving_folder + f'_{existing}'
+        if not os.path.exists(saving_folder + f'_RUN{existing}'):
+            return saving_folder + f'_RUN{existing}'
         else:
             return _make_saving_folders_(saving_folder, existing + 1)
     
     config = get_paths(toml_file=toml_file, sub_file=sub_file)
     data_file = Path(config[sub_file]['data_path']) / Path(config[sub_file]['anndata_file'])
-    folder_name = f'Run{args.n_run}_K{args.n_categories}_S{args.state_dim}_AUG{args.augmentation}_LR{args.lr}_A{args.n_arm}_B{args.batch_size}' + \
+    folder_name = f'K{args.n_categories}_S{args.state_dim}_AUG{args.augmentation}_LR{args.lr}_A{args.n_arm}_B{args.batch_size}' + \
                     f'_E{args.n_epoch}_Ep{args.n_epoch_p}'
     saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name
     return pmap(map(lambda kv: (kv[0], str(kv[1])), {
@@ -40,12 +53,7 @@ def parse_toml_(toml_file, sub_file='mouse_smartseq', args=None, trained=False):
         'aug': config['paths']['main_dir'] / config[sub_file]['aug_model'],
         'trained': config['paths']['main_dir'] / config[sub_file]['trained_model'] if trained else ''
     }.items()))
-
-def saveFolderDirs(saving_folder):
-    # assert not os.path.exists(saving_folder), saving_folder
-    print(f' -- making folders: {saving_folder} -- ')
-    os.makedirs(saving_folder, exist_ok=True)
-    os.makedirs(saving_folder + '/model', exist_ok=True)
+    
 
 def update_args(args, **kw):
     cpy = deepcopy(args)
@@ -58,7 +66,7 @@ def main(r, ws, args):
     if ws > 1:
         utils.set_prn_(r)
         utils.su_dist_(r, ws, args.addr, args.port)
-        utils.set_gpu_(r)
+        th.cuda.set_device(r)
 
     seed = 546
     th.manual_seed(seed)
@@ -70,12 +78,13 @@ def main(r, ws, args):
 
     # Load configuration paths
     cfg = parse_toml_('pyproject.toml', 'mouse_smartseq', args, trained=False)
-    saveFolderDirs(cfg.saving)
+    print(f' -- making folders: {cfg.saving} -- ')
+    os.makedirs(cfg.saving, exist_ok=True)
+    os.makedirs(cfg.saving + '/model', exist_ok=True)
 
     # Load data
     data = load_data(datafile=cfg.data)
-    print("Data loaded successfully!")
-    print(f"Number of cells: {data['log1p'].shape[0]}, Number of genes: {data['log1p'].shape[1]}")
+    print(f"# cells: {data['log1p'].shape[0]}, # genes: {data['log1p'].shape[1]}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
     cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
@@ -114,9 +123,8 @@ def main(r, ws, args):
                          mode=args.loss_mode) # <-- good programming
 
     # Train and save the model
-    run = wandb.init(project='mmidas-arms', config=vars(args)) if args.use_wandb else None
-    cplMixVAE.model = (utils.fsdp(cplMixVAE.model, 
-                               auto_wrap_policy=utils.make_wrap_policy(20000)) 
+    run = wandb.init(project='mmidas-experiments', config=vars(args)) if args.use_wandb else None
+    cplMixVAE.model = (FSDP(cplMixVAE.model, auto_wrap_policy=utils.make_wrap_policy(20000)) 
                        if ws > 1 else cplMixVAE.model)
     cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=args.lr)
 
@@ -131,7 +139,7 @@ def main(r, ws, args):
                                  run=run, ws=ws, rank=r)
 
     if ws > 1:
-        utils.cu_dist_()
+        dist.destroy_process_group()
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
@@ -176,15 +184,15 @@ if __name__ == "__main__":
     args = utils.make_args(parser)
     
     ws = utils.ct_gpu_args(args)
-    utils.prn(f'ws: {ws}')
+    print(f'ws: {ws}')
     if ws > 1:
         addr = utils.get_free_addr()
         args = update_args(args, addr=addr, 
                            port=utils.get_free_port(addr), 
                            num_workers=utils.count_num_workers(args),
                            gpus=ws, prefetch_factor=utils.get_prefetch_factor(args))
-        utils.prn(args)
-        utils.spawn_(main, ws, args)
+        print(args)
+        mp.spawn(main, args=(ws, args), nprocs=ws, join=True)
     else:
         main(args.device, 1, args)
 
