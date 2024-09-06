@@ -1,6 +1,7 @@
 import glob
-from pyrsistent import pmap
+from typing import Any, Mapping
 
+from pyrsistent import pmap
 import numpy as np
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.dataloader import load_data, get_loaders
@@ -9,7 +10,7 @@ from sklearn.metrics.cluster import adjusted_mutual_info_score
 from mmidas.utils.tools import get_paths
 from tqdm import trange
 
-from dist.plot import noExt, mapV
+from dist.plot import noExt, mapv
 
 def mkVAE(saving_folder, input_dim, C, state_dim, arms, latent_dim):
   vae = cpl_mixVAE(saving_folder=saving_folder, device='cpu')
@@ -21,7 +22,7 @@ def mkVAE(saving_folder, input_dim, C, state_dim, arms, latent_dim):
   vae.variational = False
   return vae
 
-def mkMI(probs, targets):
+def mutinfo(probs, targets):
   preds = np.argmax(probs, axis=1)
   uniq = np.unique(preds)
   
@@ -39,7 +40,7 @@ def mkMI(probs, targets):
   print(mi.shape)
   return mi
 
-def avgMI(A):
+def avg(A):
  return np.mean(np.max(A, axis=-1)).item()
 
 def avg_consensus(A): 
@@ -64,7 +65,7 @@ def _avg_consensus(A):
 def _avg_consensus_all(A):
   return np.mean([sum(np.abs(np.diff(A[:, i]))) == 0 for i in range(A.shape[1])])
 
-def parseEpoch(s):
+def parseEpoch(s: str):
   try:
     return int(noExt(s).split('_epoch_')[-1])
   except:
@@ -73,7 +74,10 @@ def parseEpoch(s):
 def updtK(dct, k, fn, l):
   return dct.set(l, fn(dct[k]))
 
-def parseTOML(tf, sf):
+# def mk_config(r: str) -> Mapping[str, Any]:
+
+
+def parseTOML(tf: str, sf: str) -> Mapping[str, Any]:
   config = get_paths(toml_file=tf, sub_file=sf)
   _trained = config[sf]['trained_model']
   _saving = config['paths']['main_dir'] / config[sf]['saving_path'] / _trained
@@ -82,7 +86,7 @@ def parseTOML(tf, sf):
     'saving': _saving,
     'trained': _trained,
   }
-  return updtK(pmap(mapV(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_**', 'pat')
+  return updtK(pmap(mapv(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_before_**', 'pat')
 
 def lookup(ks, dct):
   return [dct[k] for k in ks]
@@ -95,11 +99,12 @@ def main():
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 7,
+    'arms': 5,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
   })
+  RUN = 2
   
   fs = parseTOML(TOML, SUB)
   data, targets = lookup([DATA, TARGETS], load_data(fs.data))
@@ -108,7 +113,7 @@ def main():
                               max(glob.glob(fs.pat), key=parseEpoch), 
                               get_loaders(data, batch_size=B, seed=SEED)[-1])
 
-  avgMIs = [avgMI(mkMI(preds['c_prob'][a], targets.astype(int))) for a in range(CFG.arms)]
+  avgMIs = [avg(mutinfo(preds['c_prob'][a], targets.astype(int))) for a in range(CFG.arms)]
   
   consensus = avg_consensus(preds['pred_label'][0])
   res = {
@@ -118,8 +123,45 @@ def main():
     'avg_mi': np.mean(avgMIs).item(),
     'arms': CFG.arms,
   }
-  np.save(f'evaluation/A{CFG.arms}.npy', res)
+  np.save(f'evaluation/A{CFG.arms}-RUN{RUN}.npy', res)
   print(res)
 
 if __name__ == '__main__':
   main()
+
+"""
+Let's just use Arm 0 for now
+
+A2R0 vs A2R1
+  [] Consensus value
+  [] MI value
+  [] Consensus plot
+  [] MI plot
+A2R0 vs A2R2
+A2R1 vs A2R2
+
+A2R0 vs ttypes
+A2R1 vs ttypes
+A2R2 vs ttypes
+
+A3R0 vs A3R1
+A3R0 vs A3R2
+A3R1 vs A3R2
+
+A3R0 vs ttypes
+A3R1 vs ttypes
+A3R2 vs ttypes
+
+A5R0 vs A5R1
+A5R0 vs A5R2
+A5R1 vs A5R2
+
+A5R0 vs ttypes
+A5R1 vs ttypes
+A5R2 vs ttypes
+
+A2R0 vs A3R0
+A2R0 vs A5R0
+A3R0 vs A5R0
+
+"""

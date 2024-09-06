@@ -184,7 +184,7 @@ def findRuns(config, run_dir='toy-runs', log_dir='mnist-logs'):
 def thk0(x):
     return lambda _: x
 
-def mapV(f, assocs):
+def mapv(f, assocs):
     return map(lambda x: (x[0], f(x[1])), assocs)
 
 def conj(x, xs):
@@ -195,7 +195,7 @@ def swap(fn):
 
 def plot(*metrics, dirn='toy-runs', style='line', title=None, save=None, drop_first=2,
          scale=1, ylabel=None, **kw):
-    _kw = acm(map(lambda x: mapCons(thk0(x[0]), x[1]), mapV(findRuns, kw.items())),
+    _kw = acm(map(lambda x: mapCons(thk0(x[0]), x[1]), mapv(findRuns, kw.items())),
               lambda acc, x: rdc(swap(conj), x, acc),
               initial=v())
     _plot(*metrics, dirn=dirn, style=style, title=title, save=save,

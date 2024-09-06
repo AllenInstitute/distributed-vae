@@ -1,13 +1,20 @@
-import numpy as np
-import scipy.io as sio
+import os
 import toml
 import requests
-from pathlib import Path
+from pathlib import Path, PosixPath
 from functools import lru_cache
+from typing import Any
+
+import numpy as np
+import scipy.io as sio
 from sklearn.preprocessing import normalize
 
+# TODO
+def parse_toml():
+    pass
+
 @lru_cache(maxsize=None)
-def get_paths(toml_file: str, sub_file: str='files', verbose=False):
+def get_paths(toml_file: str, sub_file: str='files', verbose=False) -> dict[str, Any]:
     """Loads dictionary with path names and any other variables set through xxx.toml
 
     Args:
@@ -18,7 +25,7 @@ def get_paths(toml_file: str, sub_file: str='files', verbose=False):
     """
 
     # package_dir = Path().resolve().parents[1]
-    package_dir = Path().resolve()
+    package_dir = PosixPath(os.getcwd())
     config_file = package_dir / toml_file
     print(config_file)
 
@@ -48,7 +55,7 @@ def get_paths(toml_file: str, sub_file: str='files', verbose=False):
 
     return config
 
-def normalize_cellxgene(x) -> np.array:
+def normalize_cellxgene(x) -> np.ndarray[Any, Any]:
     """ Normalize based on number of input genes
 
     inpout args
@@ -60,7 +67,7 @@ def normalize_cellxgene(x) -> np.array:
     return normalize(x, axis=1, norm='l1')
 
 
-def logcpm(x, scaler=1e6) -> np.array:
+def logcpm(x, scaler=1e6) -> np.ndarray[Any, Any]:
     """ Log CPM normalization
 
     inpout args
