@@ -8,6 +8,8 @@
 #SBATCH -e mmidas-logs/mmidas_%j.err
 #SBATCH --time=48:00:00
 
-source activate mdist-mmidas
+source ~/.bashrc
+
+mamba activate mdist-mmidas
 
 python train.py --n_arm 1 --use-wandb --gpus 1 --n_epoch 100000

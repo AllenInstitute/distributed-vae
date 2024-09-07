@@ -22,7 +22,9 @@ cat << EOF > $FILE
 #SBATCH -e mmidas-logs/mmidas_%j.err
 #SBATCH --time=48:00:00
 
-source activate mdist-mmidas
+source ~/.bashrc
+
+mamba activate mdist-mmidas
 
 python -m dist.train --n_arm $ARMS --use-wandb --use_dist_sampler --n_epoch $EPOCHS
 EOF

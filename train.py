@@ -29,12 +29,6 @@ import fsdp_mnist as utils
 
 signal.signal(signal.SIGINT, lambda _, __: dist.destroy_process_group())
 
-class CUDADevice:
-    pass
-
-class Dist:
-    pass
-
 def parse_toml_(toml_file: str, sub_file: str, args=None, trained=False):
     def _make_saving_folders_(saving_folder, existing=0):
         if not os.path.exists(saving_folder + f'_RUN{existing}'):
