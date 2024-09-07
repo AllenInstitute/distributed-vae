@@ -1,10 +1,37 @@
-import torch
-import torch.nn as nn
-from torch.nn import ModuleList as mdl
+from dataclasses import dataclass
+from typing import Optional, List
+
 import numpy as np
+import torch
+import torch as th
+from torch import nn
+from torch.nn import ModuleList as mdl
 from torch.autograd import Variable
 from torch.nn import functional as F
 
+@dataclass
+class VAEConfig:
+    n_categories: int = 92
+    state_dim: int = 2
+    input_dim: int = 5032
+    fc_dim: int = 100
+    lowD_dim: int = 10
+    x_drop: float = 0.5
+    s_drop: float = 0.2
+    lr: float = 0.001
+    lam: float = 1
+    lam_pc: float = 1
+    n_arm: int = 2
+    temp: float = 1.0
+    tau: float = 0.005
+    beta: float = 1.0
+    hard: bool = False
+    variational: bool = True
+    ref_prior: bool = False
+    trained_model: Optional[str] = None
+    n_pr: int = 0
+    momentum: float = 0.01
+    mode: str = 'MSE'
 
 class mixVAE_model(nn.Module):
     """
@@ -74,10 +101,8 @@ class mixVAE_model(nn.Module):
         self.device = device
         self.loss_mode = loss_mode
 
-        self.relu = nn.ReLU()
         self.lrelu = nn.LeakyReLU(0.1, inplace=True)
         self.elu = nn.ELU()
-        self.sigmoid = nn.Sigmoid()
         self.tanh = nn.Tanh()
 
         self.fc1 = mdl([nn.Linear(input_dim, fc_dim) for i in range(n_arm)])
@@ -113,39 +138,36 @@ class mixVAE_model(nn.Module):
         self.c_var = [None] * 2
 
     def encoder(self, x, arm):
-        x = self.batch_l1[arm](self.relu(self.fc1[arm](self.x_dp(x))))
-        x = self.batch_l2[arm](self.relu(self.fc2[arm](x)))
-        x = self.batch_l3[arm](self.relu(self.fc3[arm](x)))
-        x = self.batch_l4[arm](self.relu(self.fc4[arm](x)))
-        z = self.batch_l5[arm](self.relu(self.fc5[arm](x)))
-        return z, F.softmax(self.fcc[arm](z), dim=-1)
+        x = self.batch_l1[arm](F.relu(self.fc1[arm](self.x_dp(x))))
+        x = self.batch_l2[arm](F.relu(self.fc2[arm](x)))
+        x = self.batch_l3[arm](F.relu(self.fc3[arm](x)))
+        x = self.batch_l4[arm](F.relu(self.fc4[arm](x)))
+        logits = self.batch_l5[arm](F.relu(self.fc5[arm](x)))
+        return logits, F.softmax(self.fcc[arm](logits), dim=-1)
 
     def intermed(self, x, arm):
         if self.varitional:
-            return self.fc_mu[arm](x), self.sigmoid(self.fc_sigma[arm](x))
+            return self.fc_mu[arm](x), th.sigmoid(self.fc_sigma[arm](x))
         else:
             return self.fc_mu[arm](x)
 
+    def _decode(self, c, s, arm):
+        s = self.s_dp(s)
+        z = th.cat((c, s), dim=1)
+        x = F.relu(self.fc6[arm](z))
+        x = F.relu(self.fc7[arm](x))
+        x = F.relu(self.fc8[arm](x))
+        x = F.relu(self.fc9[arm](x))
+        return F.relu(self.fc10[arm](x))
 
     def decoder(self, c, s, arm):
-        s = self.s_dp(s)
-        z = torch.cat((c, s), dim=1)
-        x = self.relu(self.fc6[arm](z))
-        x = self.relu(self.fc7[arm](x))
-        x = self.relu(self.fc8[arm](x))
-        x = self.relu(self.fc9[arm](x))
-        x = self.relu(self.fc10[arm](x))
-        return self.relu(self.fc11[arm](x))
+        return F.relu(self.fc11[arm](self._decode(c, s, arm)))
     
     def decoder_zinb(self, c, s, arm):
-        s = self.s_dp(s)
-        z = torch.cat((c, s), dim=1)
-        x = self.relu(self.fc6[arm](z))
-        x = self.relu(self.fc7[arm](x))
-        x = self.relu(self.fc8[arm](x))
-        x = self.relu(self.fc9[arm](x))
-        x = self.relu(self.fc10[arm](x))
-        return self.relu(self.fc11[arm](x)), self.sigmoid(self.fc11_p[arm](x)), self.sigmoid(self.fc11_r[arm](x))
+        x = self._decode(c, s, arm)
+        return (F.relu(self.fc11[arm](x)), 
+                th.sigmoid(self.fc11_p[arm](x)), 
+                th.sigmoid(self.fc11_r[arm](x)))
 
     def forward(self, x, temp, prior_c=[], eval=False, mask=None):
         """
@@ -165,56 +187,56 @@ class mixVAE_model(nn.Module):
             log_var: list of log of variance of the state variable for all arms.
             log_qc: list of log-likelihood value of categorical variables in a batch for all arms.
         """
-        recon_x = [None] * self.n_arm
-        zinb_pi = [None] * self.n_arm
-        zinb_r = [None] * self.n_arm
-        p_x = [None] * self.n_arm
-        s, c = [None] * self.n_arm, [None] * self.n_arm
-        mu, log_var = [None] * self.n_arm, [None] * self.n_arm
-        qc, alr_qc = [None] * self.n_arm, [None] * self.n_arm
-        x_low, log_qc = [None] * self.n_arm, [None] * self.n_arm
+        A = self.n_arm
+        C = self.n_categories
+
+        x_rec = [None] * A
+        zinb_pi = [None] * A
+        zinb_r = [None] * A
+        s, c = [None] * A, [None] * A
+        mu, log_var = [None] * A, [None] * A
+        qc = [None] * A
+        x_low, c_probs = [None] * A, [None] * A
 
 
-
-        for arm in range(self.n_arm):
-            x_ = x[arm]
-            x_low[arm], log_qc[arm] = self.encoder(x_, arm)
+        for a in range(A):
+            x_low[a], c_probs[a] = self.encoder(x[a], a)
 
             if mask is not None:
-                qc_tmp = F.softmax(log_qc[arm][:, mask] / self.tau, dim=-1)
-                qc[arm] = torch.zeros((log_qc[arm].size(0), log_qc[arm].size(1))).to(self.device)
+                qc_tmp = F.softmax(c_probs[a][:, mask] / self.tau, dim=-1)
+                qc[a] = th.zeros((c_probs[a].size(0), c_probs[a].size(1)), device=self.device)
 
-                qc[arm][:, mask] = qc_tmp
+                qc[a][:, mask] = qc_tmp
             else:
-                qc[arm] = F.softmax(log_qc[arm] / self.tau, dim=-1)
+                qc[a] = F.softmax(c_probs[a] / self.tau, dim=-1)
 
-            q_ = qc[arm].view(log_qc[arm].size(0), 1, self.n_categories)
+            q_ = qc[a].view(c_probs[a].size(0), 1, C)
 
             if eval:
-                c[arm] = self.gumbel_softmax(q_, 1, self.n_categories, temp, hard=True, gumble_noise=False)
+                c[a] = self.gumbel_softmax(q_, 1, C, temp, hard=True, gumble_noise=False)
             else:
-                c[arm] = self.gumbel_softmax(q_, 1, self.n_categories, temp, hard=self.hard)
+                c[a] = self.gumbel_softmax(q_, 1, C, temp, hard=self.hard)
 
             if self.ref_prior:
-                y = torch.cat((x_low[arm], prior_c), dim=1)
+                y = th.cat((x_low[a], prior_c), dim=1)
             else:
-                y = torch.cat((x_low[arm], c[arm]), dim=1)
+                y = th.cat((x_low[a], c[a]), dim=1)
 
             if self.varitional:
-                mu[arm], var = self.intermed(y, arm)
-                log_var[arm] = (var + self.eps).log()
-                s[arm] = self.reparam_trick(mu[arm], log_var[arm])
+                mu[a], var = self.intermed(y, a)
+                log_var[a] = (var + self.eps).log()
+                s[a] = self.reparam_trick(mu[a], log_var[a])
             else:
-                mu[arm] = self.intermed(y, arm)
-                log_var[arm] = 0. * mu[arm]
-                s[arm] = self.intermed(y, arm)
+                mu[a] = self.intermed(y, a)
+                log_var[a] = 0. * mu[a]
+                s[a] = self.intermed(y, a)
             
             if self.loss_mode == 'ZINB':
-                recon_x[arm], zinb_pi[arm], zinb_r[arm] = self.decoder_zinb(c[arm], s[arm], arm)
+                x_rec[a], zinb_pi[a], zinb_r[a] = self.decoder_zinb(c[a], s[a], a)
             else:
-                recon_x[arm] = self.decoder(c[arm], s[arm], arm)
+                x_rec[a] = self.decoder(c[a], s[a], a)
 
-        return recon_x, zinb_pi, zinb_r, x_low, qc, s, c, mu, log_var, log_qc
+        return x_rec, zinb_pi, zinb_r, x_low, qc, s, c, mu, log_var, c_probs
 
 
     def state_changes(self, x, d_s, temp, n_samp=100):
@@ -287,9 +309,9 @@ class mixVAE_model(nn.Module):
         return
             -(log(-log(U))) (tensor)
         """
-        U = torch.rand(shape, device=self.device)
+        U = th.rand(shape, device=self.device)
 
-        return -Variable(torch.log(-torch.log(U + self.eps) + self.eps))
+        return -Variable(th.log(-th.log(U + self.eps) + self.eps))
 
 
     def gumbel_softmax_sample(self, phi, temperature):

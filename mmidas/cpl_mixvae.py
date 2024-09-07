@@ -4,16 +4,21 @@ import random
 import time
 from functools import reduce
 from itertools import cycle, repeat
+from dataclasses import dataclass
+from typing import Optional, Literal, assert_never, Sequence, Iterable, Any, Mapping
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch as th
 import torch.distributed as dist
+from torch.distributed import ReduceOp
 import torch.multiprocessing as mp
-from torch import nn
+from torch import nn, cuda
 import torch.nn.functional as F
 import torch.nn.utils.prune as prune
 import torch.optim as optim
+from torch.optim.optimizer import Optimizer
 from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
@@ -26,87 +31,60 @@ from tqdm import tqdm, trange
 import wandb
 
 from .augmentation.udagan import *
-from .nn_model import mixVAE_model
+from .nn_model import mixVAE_model, VAEConfig
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
 
-T = torch
-th = torch
+Device = Literal['cpu', 'cuda', 'mps'] | int
 
-def prn(*args, **kwargs):
-    print(*args, **kwargs)
+# TODO
 
-def set_gpu_(rank):
-    torch.cuda.set_device(rank)
+@dataclass
+class Master:
+    rank: Literal[0, 'mps', 'cpu', 'cuda']
 
-def free_gpu_():
-    torch.cuda.empty_cache()
+@dataclass
+class Worker:
+    rank: int
 
-def is_gpu_available():
-    return torch.cuda.is_available()
+Rank = Master | Worker
 
-def gpu_name(rank):
-    return torch.cuda.get_device_name(rank)
-
-def current_gpu():
-    return torch.cuda.current_device()
+def mk_rank(i: int | Literal['mps', 'cpu', 'cuda']) -> Rank:
+    match i:
+        case 0 | 'mps' | 'cpu' | 'cuda':
+            return Master(i)
+        case int(j):
+            return Worker(j)
+        case _:
+            assert_never(i)
 
 def is_master(rank):
-    return rank == 0 or rank == 'mps' or rank == 'cpu'
+    return rank == 0 or rank == 'mps' or rank == 'cpu' or isinstance(rank, Master)
 
-def transform_loader(loader, *funs):
-    return reduce(lambda acc, f: f(acc), funs, loader)
+def compose2(f, g):
+    return lambda *a, **kw: f(g(*a, **kw))
 
-def make_pbar(loader, rank, *funs):
-    total = len(loader)
-    loader = transform_loader(loader, *funs)
-    if is_master(rank):
-        return tqdm(loader, total=total, unit_scale=True)
-    else:
-        return loader
+def compose(*fs):
+    return reduce(compose2, fs)
 
-def is_tensor(obj):
-    return isinstance(obj, torch.Tensor)
+def mk_pbar(seq: Sequence, r: Rank, *fs) -> Sequence:
+    return (lambda x: tqdm(x, total=len(x)) if is_master(r) else x)(compose(*fs)(seq)) # type: ignore
 
-def map_convert(dtype, t):
-    if is_tensor(t):
-        return t.to(dtype)
-    else:
-        raise ValueError("error: input type not supported")
+    # _seq: Sequence = compose(*fs)(seq)
+    # match r:
+    #     case Master(_):
+    #         return tqdm(_seq, total=len(seq)) # type: ignore
+    #     case Worker(_):
+    #         return _seq
+    #     case _:
+    #         assert_never(r)
+
+    # loader = 
+    # if is_master(rank):
+    #     return tqdm(loader, total=len(loader), unit_scale=True)
+    # else:
+    #     return loader
     
-def to_device(t, device): 
-    if is_tensor(t):
-        return t.to(device)
-    else:
-        raise ValueError("error: input type not supported")
-    
-def is_sum(op):
-  return op == 'sum'
-
-def is_product(op):
-  return op == 'product'
-
-def is_min(op):
-  return op == 'min'
-
-def is_max(op):
-  return op == 'max'
-
-def make_reduce_op(op):
-  if is_sum(op):
-    return dist.ReduceOp.SUM
-  elif is_product(op):
-    return dist.ReduceOp.PRODUCT
-  elif is_min(op):
-    return dist.ReduceOp.MIN
-  elif is_max(op):
-    return dist.ReduceOp.MAX
-  else:
-    raise ValueError(f"Unknown reduce op: {op}")
-  
-def set_epoch_(sampler, epoch):
-    sampler.set_epoch(epoch)
-
 def is_parallel(world_size):
     return world_size > 1
   
@@ -119,62 +97,62 @@ def print_val_loss(val_loss, val_loss_rec, rank):
     if is_master(rank):
         print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(val_loss, val_loss_rec))
   
-def all_reduce_(tensor, op='sum'):
-  dist.all_reduce(tensor, op=make_reduce_op(op))
+def avg_recon_loss(l: np.ndarray) -> float:
+    return np.mean(l, axis=0)
 
-def make_dirs_(name):
-    os.makedirs(name, exist_ok=True)
+def unwrap[T](x: Optional[T]) -> T:
+    if x is None:
+        raise ValueError("error: expected non-None value")
+    return x
 
-def is_nparray(x):
-    return isinstance(x, np.ndarray)
-
-def avg_recon_loss(l):
-    if is_nparray(l):
-        return np.mean(l, axis=0)
-    else:
-        raise ValueError("error: input type not supported")
-
-def disable_augmentation_(model, rank):
-    model.aug_file = False
-    if is_master(rank):
-        print("warning: augmentation disabled")
-
-
-def profile_data_loading(loader, epochs, rank):
-    activities = [
-                    ProfilerActivity.CPU,
-                    ProfilerActivity.CUDA
-                ]
-    prof = profile(activities=activities, record_shapes=True, 
-                   profile_memory=True, with_stack=False)
-    prof.start()
-    with record_function('all_epochs'):
-        for epoch in range(epochs):
-            with record_function('single_epoch'):
-                for batch_idx, (data, d_idx) in enumerate(loader):
-                    with record_function('load_data'):
-                        data.to(rank)
-                        d_idx.to(int)
-    prof.stop()
-    print('profiling results:')
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=-1, top_level_events_only=True))
-    for event in prof.key_averages():
-        if event.key in ['load_data', 'augmentation', 'forward', 
-                            'backward', 'optimize', 'add_losses_in_epoch', 
-                            'all_reduce', 'add_total_losses', 'log', 'print_train_loss']:
-            print(f"{event.key}: CPU time: {event.cpu_time_total:.2f}ms, CUDA time: {event.cuda_time_total:.2f}ms")
-
-def count_workers_(deterministic=False):
+def len_cpus(deterministic=False) -> int:
     if deterministic:
         return 1
     elif hasattr(os, 'sched_getaffinity'):
         return len(os.sched_getaffinity(0))
     else:
-        return os.cpu_count()
+        return unwrap(os.cpu_count())
+    
+def get_device(device: Optional[Device] = None) -> th.device:
+    match device:
+        case 'cpu' | 'mps' as d:
+            print(f'using {d}')
+            return th.device(d)
+        case 'cuda' as d:
+            print(f'using {d}: {cuda.get_device_name(d)}')
+            return th.device(d)
+        case int(d):
+            cuda.set_device(d)
+            return get_device('cuda')
+        case None:
+            print('device not found')
+            return get_device('cpu')
+        case _:
+            assert_never(device)
+
+def mk_augmenter(pretrained: str, load_weights: bool) -> tuple[Mapping[Any, Any], Mapping[Any, Any], nn.Module]:
+    aug_model = th.load(pretrained, map_location='cpu')
+    aug_param = aug_model['parameters']
+    if load_weights:
+        print('loading augmenter weights')
+        netA = Augmenter_smartseq(noise_dim=aug_param['num_n'],
+                                  latent_dim=aug_param['num_z'],
+                                  input_dim=aug_param['n_features'])
+        netA.load_state_dict(aug_model['netA'])
+        return aug_model, aug_param, netA
+    else:
+        print('warning: not loading augmenter weights')
+        netA = Augmenter(noise_dim=aug_param['num_n'],
+                         latent_dim=aug_param['num_z'],
+                         input_dim=aug_param['n_features'])
+        return aug_model, aug_param, netA
+
+def asnp(x):
+    return x.cpu().detach().numpy()
 
 class cpl_mixVAE:
 
-    def __init__(self, saving_folder='', aug_file='', device=None, eps=1e-8, 
+    def __init__(self, saving_folder='', aug_file='', device: Optional[Device] = None, eps=1e-8, 
                  save_flag=True, load_weights=True):
         """
         Initialized the cpl_mixVAE class.
@@ -192,39 +170,15 @@ class cpl_mixVAE:
         self.folder = saving_folder
         self.aug_file = aug_file
         self.device = device
+        self.models: list[dict[str, nn.Module | Optimizer]] = []
 
-        if device is None:
-            self.device = torch.device('cpu')
-            print('---> Computional node is not assigned, using CPU!')
+        self.device = get_device(device)
+
+        if aug_file:
+            self.aug_model, self.aug_param, netA = mk_augmenter(aug_file, load_weights)
+            self.netA = netA.to(self.device).eval()
         else:
-            print(f"device: {device}")
-            if device == 'cpu':
-                self.device = torch.device('cpu')
-                print('---> Using CPU!')
-            elif device == 'mps':
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device(device)
-                if isinstance(device, int):
-                    set_gpu_(device)
-                print('---> ' + gpu_name(current_gpu()))
-
-        if self.aug_file:
-            self.aug_model = torch.load(self.aug_file, map_location='cpu')
-            self.aug_param = self.aug_model['parameters']
-            
-            if load_weights:
-                print('loading weights...')
-                self.netA = Augmenter_smartseq(noise_dim=self.aug_param['num_n'],
-                                latent_dim=self.aug_param['num_z'],
-                                input_dim=self.aug_param['n_features'])
-                # Load the trained augmenter weights
-                self.netA.load_state_dict(self.aug_model['netA'])
-            else:
-                self.netA = Augmenter(noise_dim=self.aug_param['num_n'],
-                                      latent_dim=self.aug_param['num_z'],
-                                      input_dim=self.aug_param['n_features'])
-            self.netA = self.netA.to(self.device).eval()
+            self.aug_model, self.aug_param, self.netA = None, None, None
 
     def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
         self.batch_size = batch_size
@@ -261,12 +215,12 @@ class cpl_mixVAE:
             train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, 
-                                      persistent_workers=True, num_workers=count_workers_(deterministic),
+                                      persistent_workers=True, num_workers=len_cpus(deterministic),
                                       sampler=train_sampler)
         else:
             train_loader = DataLoader(train_data, batch_size=batch_size, 
                                       drop_last=True, pin_memory=True, persistent_workers=True,
-                                      num_workers=count_workers_(deterministic))
+                                      num_workers=len_cpus(deterministic))
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
@@ -280,12 +234,12 @@ class cpl_mixVAE:
         if world_size > 1 and use_dist_sampler:
             print('using distributed sampler...')
             test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=count_workers_(deterministic),
+            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=len_cpus(deterministic),
                                     sampler=test_sampler)
         else:
             test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
                                      pin_memory=True, persistent_workers=True,
-                                     num_workers=count_workers_(deterministic))
+                                     num_workers=len_cpus(deterministic))
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
@@ -337,7 +291,7 @@ class cpl_mixVAE:
                                 ref_prior=ref_prior, momentum=momentum, loss_mode=mode)
         
         self.model = self.model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
         if len(trained_model) > 0:
             print('Load the pre-trained model')
@@ -351,7 +305,18 @@ class cpl_mixVAE:
             self.init = True
             self.n_pr = 0
 
-
+    def append(self, c: VAEConfig):
+        model = mixVAE_model(input_dim=c.input_dim, fc_dim=c.fc_dim, n_categories=c.n_categories, state_dim=c.state_dim,
+                                lowD_dim=c.lowD_dim, x_drop=c.x_drop, s_drop=c.s_drop, n_arm=c.n_arm, lam=c.lam, lam_pc=c.lam_pc,
+                                tau=c.tau, beta=c.beta, hard=c.hard, variational=c.variational, device=self.device, eps=self.eps,
+                                ref_prior=c.ref_prior, momentum=c.momentum, loss_mode=c.mode).to(self.device)
+        optimizer = optim.Adam(model.parameters(), lr=c.lr)
+        if c.trained_model:
+            loaded_file = th.load(c.trained_model, map_location='cpu')
+            model.load_state_dict(loaded_file['model_state_dict'])
+            optimizer.load_state_dict(loaded_file['optimizer_state_dict'])
+        self.models.append({'model': model, 'opt': optimizer})
+        
     def load_model(self, trained_model):
         loaded_file = torch.load(trained_model, map_location='cpu')
         self.model.load_state_dict(loaded_file['model_state_dict'])
@@ -993,9 +958,9 @@ class cpl_mixVAE:
 
                 sampler = get_sampler(train_loader)
                 if is_dist_sampler(sampler):
-                    set_epoch_(sampler, epoch)
+                    sampler.set_epoch(epoch)
 
-                pbar = make_pbar(train_loader, rank, enumerate)
+                pbar = mk_pbar(train_loader, mk_rank(rank), enumerate)
                 for batch_indx, (data, d_idx), in pbar:
                     # data = to_device(data, rank)
                     # d_idx = map_convert(int, d_idx)
@@ -1055,11 +1020,11 @@ class cpl_mixVAE:
                 print(f'before reduce: {train_loss_val[0] / train_loss_val[1]}')
                 
                 if is_parallel(world_size):
-                    all_reduce_(train_loss_val, op='sum')
+                    dist.all_reduce(train_loss_val, ReduceOp.SUM)
 
                 print(f'after reduce: {train_loss_val[0] / train_loss_val[1]}')                
 
-                batch_count = count_batches(train_loader)
+                batch_count = len(train_loader)
                 train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
                 train_loss_joint[epoch] = train_jointloss_val / batch_count
                 train_distance[epoch] = train_dqc / batch_count
@@ -1087,10 +1052,10 @@ class cpl_mixVAE:
                     val_loss_rec = 0.
                     val_loss = torch.zeros(1, device=rank)
                     if test_loader.batch_size > 1:
-                        pbar = make_pbar(test_loader, rank, enumerate)
+                        pbar = mk_pbar(test_loader, mk_rank(rank), enumerate)
                         for batch_indx, (data_val, d_idx), in pbar:
-                            data_val = to_device(data_val, rank)
-                            d_idx = map_convert(int, d_idx)
+                            data_val = data_val.to(rank)
+                            d_idx = d_idx.to(int)
                             trans_val_data = []
                             for arm in range(self.n_arm):
                                trans_val_data.append(data_val)
@@ -1110,8 +1075,8 @@ class cpl_mixVAE:
                     else:
                         batch_indx = 0
                         data_val, d_idx = test_loader.dataset.tensors
-                        data_val = to_device(data_val, rank)
-                        d_idx = map_convert(int, d_idx)
+                        data_val = data_val.to(rank)
+                        d_idx = d_idx.to(int)
                         trans_val_data = []
                         for arm in range(self.n_arm):
                             trans_val_data.append(data_val)
@@ -1146,7 +1111,7 @@ class cpl_mixVAE:
             for e, l in zip(x, y):
                 log({'Avg reconstruction loss': l, 'epoch': e})
             self.save = False
-            prn(f'warning: disabling saving')
+            print(f'warning: disabling saving')
             if self.save:
                 assert n_epoch > 0, "error: n_epoch must be greater than 0"
                 trained_model = self.folder + './model/cpl_mixVAE_model_before_pruning_' + self.current_time + '.pth'
@@ -1461,7 +1426,7 @@ class cpl_mixVAE:
     def train_joint_(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, 
                c_onehot=0, min_con=.5, max_prun_it=0, rank=None, world_size=1,
                log=None):
-        assert is_gpu_available(), "error: no GPU available"
+        assert th.cuda.is_available(), "error: no GPU available"
 
         # define current_time
         self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
@@ -1524,9 +1489,9 @@ class cpl_mixVAE:
 
                 sampler = get_sampler(train_loader)
                 if is_dist_sampler(sampler):
-                    set_epoch_(sampler, epoch)
+                    sampler.set_epoch(epoch)
 
-                pbar = make_pbar(train_loader, rank, enumerate)
+                pbar = mk_pbar(train_loader, mk_rank(rank), enumerate)
                 for batch_indx, (data, d_idx), in pbar:
                     data = data.to(rank)
                     data_bin = torch.where(data > self.eps, 1, 0).to(rank)
@@ -1604,9 +1569,9 @@ class cpl_mixVAE:
                         train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
                 
                 if is_parallel(world_size):
-                    all_reduce_(train_loss_val, op='sum')
+                    dist.all_reduce(train_loss_val, ReduceOp.SUM)
 
-                batch_count = count_batches(train_loader)
+                batch_count = len(train_loader)
                 train_loss[epoch] = train_loss_val[0] / train_loss_val[1]
                 train_loss_joint[epoch] = train_jointloss_val / batch_count
                 train_distance[epoch] = train_dqc / batch_count
@@ -1632,10 +1597,10 @@ class cpl_mixVAE:
                     val_loss_rec = 0.
                     val_loss = torch.zeros(1, device=rank)
                     if test_loader.batch_size > 1:
-                        pbar = make_pbar(test_loader, rank, enumerate)
+                        pbar = mk_pbar(test_loader, mk_rank(rank), enumerate)
                         for batch_indx, (data_val, d_idx), in pbar:
-                            data_val = to_device(data_val, rank)
-                            d_idx = map_convert(int, d_idx)
+                            data_val = data_val.to(rank)
+                            d_idx = d_idx.to(int)
                             trans_val_data = []
                             for arm in range(self.n_arm):
                                trans_val_data.append(data_val)
@@ -1655,8 +1620,8 @@ class cpl_mixVAE:
                     else:
                         batch_indx = 0
                         data_val, d_idx = test_loader.dataset.tensors
-                        data_val = to_device(data_val, rank)
-                        d_idx = map_convert(int, d_idx)
+                        data_val = data_val.to(rank)
+                        d_idx = d_idx.to(int)
                         trans_val_data = []
                         for arm in range(self.n_arm):
                             trans_val_data.append(data_val)
@@ -2003,11 +1968,7 @@ class cpl_mixVAE:
     
         return ''
 
-
-    
-
-
-    def eval_model(self, data_loader, c_p=0, c_onehot=0):
+    def eval_model(self, ldr: DataLoader, c_p=0, c_onehot=0):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
         pcikle used for saving the file
@@ -2021,172 +1982,166 @@ class cpl_mixVAE:
             d_dict: the output dictionary.
         """
 
+        A = self.n_arm
+        C = self.n_categories
+
         # Set the model to evaluation mode
         self.model.eval()
 
         # Extract bias and pruning mask
-        bias = self.model.fcc[0].bias.detach().cpu().numpy()
+        bias = asnp(self.model.fcc[0].bias)
         pruning_mask = np.where(bias != 0.)[0]
         prune_indx = np.where(bias == 0.)[0]
 
         # Initialize arrays for storing evaluation results
-        max_len = len(data_loader.dataset)
-        recon_cell = np.zeros((self.n_arm, max_len, self.input_dim))
-        p_cell = np.zeros((self.n_arm, max_len, self.input_dim))
-        state_sample = np.zeros((self.n_arm, max_len, self.state_dim))
-        state_mu = np.zeros((self.n_arm, max_len, self.state_dim))
-        state_var = np.zeros((self.n_arm, max_len, self.state_dim))
-        z_prob = np.zeros((self.n_arm, max_len, self.n_categories))
-        z_sample = np.zeros((self.n_arm, max_len, self.n_categories))
-        data_low = np.zeros((self.n_arm, max_len, self.lowD_dim))
-        state_cat = np.zeros([self.n_arm, max_len])
-        prob_cat = np.zeros([self.n_arm, max_len])
+        max_len = len(ldr.dataset)
+        recon_cell = np.zeros((A, max_len, self.input_dim))
+        p_cell = np.zeros((A, max_len, self.input_dim))
+        state_sample = np.zeros((A, max_len, self.state_dim))
+        state_mu = np.zeros((A, max_len, self.state_dim))
+        state_var = np.zeros((A, max_len, self.state_dim))
+        z_prob = np.zeros((A, max_len, C))
+        z_sample = np.zeros((A, max_len, C))
+        data_low = np.zeros((A, max_len, self.lowD_dim))
+        state_cat = np.zeros([A, max_len])
+        prob_cat = np.zeros([A, max_len])
         if self.ref_prior:
-            predicted_label = np.zeros((self.n_arm+1, max_len))
+            predicted_label = np.zeros((A + 1, max_len))
         else:
-            predicted_label = np.zeros((self.n_arm, max_len))
+            predicted_label = np.zeros((A, max_len))
         data_indx = np.zeros(max_len)
         total_loss_val = []
         total_dist_z = []
         total_dist_qz = []
-        total_loss_rec = [[] for a in range(self.n_arm)]
-        total_loglikelihood = [[] for a in range(self.n_arm)]
+        total_loss_rec = [[] for _ in range(A)]
+        total_loglikelihood = [[] for _ in range(A)]
 
         # Perform evaluation
         self.model.eval()
-        batch_size = data_loader.batch_size
+        B = unwrap(ldr.batch_size)
 
-        with torch.no_grad():
-            if batch_size > 1:
-                for i, (data, data_idx) in enumerate(data_loader):
+        with th.no_grad():
+            if B > 1:
+                for i, (data, data_idx) in enumerate(ldr):
                     data = data.to(self.device)
                     data_idx = data_idx.to(int)
                     
                     if self.ref_prior:
-                        c_bin = torch.FloatTensor(c_onehot[data_idx, :]).to(self.device)
-                        prior_c = torch.FloatTensor(c_p[data_idx, :]).to(self.device)
+                        c_bin = th.FloatTensor(c_onehot[data_idx, :]).to(self.device)
+                        prior_c = th.FloatTensor(c_p[data_idx, :]).to(self.device)
                     else:
                         c_bin = 0.
                         prior_c = 0.
 
-                    trans_data = []
-                    for arm in range(self.n_arm):
-                        trans_data.append(data)
+                    trans_data = [data for _ in range(A)]
 
                     recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c=prior_c, eval=True, mask=pruning_mask)
-                    loss, loss_arms, loss_joint, _, dist_z, d_qz, _, _, loglikelihood = self.model.loss(recon, p_x, r_x, trans_data, mu, log_sigma, z_category, z_smp, c_bin)
-                    total_loss_val.append(loss.data.item() if isinstance(loss, torch.Tensor) else loss)
-                    total_dist_z.append(dist_z.data.item() if isinstance(dist_z, torch.Tensor) else dist_z)
-                    total_dist_qz.append(d_qz.data.item() if isinstance(d_qz, torch.Tensor) else d_qz)
+                    loss, loss_arms, _, _, dist_z, d_qz, _, _, loglikelihood = self.model.loss(recon, p_x, r_x, trans_data, mu, log_sigma, z_category, z_smp, c_bin)
+                    total_loss_val.append(loss.item() if isinstance(loss, torch.Tensor) else loss)
+                    total_dist_z.append(dist_z.item() if isinstance(dist_z, torch.Tensor) else dist_z)
+                    total_dist_qz.append(d_qz.item() if isinstance(d_qz, torch.Tensor) else d_qz)
 
                     if self.ref_prior:
-                        predicted_label[0, i * batch_size:min((i + 1) * batch_size, max_len)] = np.argmax(c_p[data_idx, :], axis=1) + 1
+                        predicted_label[0, i * B:min((i + 1) * B, max_len)] = np.argmax(c_p[data_idx, :], axis=1) + 1
 
-                    for arm in range(self.n_arm):
-                        total_loss_rec[arm].append(loss_arms[arm].data.item())
-                        total_loglikelihood[arm].append(loglikelihood[arm].data.item())
+                    for a in range(A):
+                        total_loss_rec[a].append(loss_arms[a].item())
+                        total_loglikelihood[a].append(loglikelihood[a].item())
 
-                    for arm in range(self.n_arm):
-                        state_sample[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = state[arm].cpu().detach().numpy()
-                        state_mu[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = mu[arm].cpu().detach().numpy()
-                        state_var[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = log_sigma[arm].cpu().detach().numpy()
-                        z_encoder = z_category[arm].cpu().data.view(z_category[arm].size()[0], self.n_categories).detach().numpy()
-                        z_prob[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = z_encoder
-                        z_samp = z_smp[arm].cpu().data.view(z_smp[arm].size()[0], self.n_categories).detach().numpy()
-                        z_sample[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = z_samp
-                        data_low[arm,  i * batch_size:min((i + 1) * batch_size, max_len), :] = x_low[arm].detach().cpu().numpy()
+                    for a in range(A):
+                        state_sample[a, i * B:min((i + 1) * B, max_len), :] = asnp(state[a])
+                        state_mu[a, i * B:min((i + 1) * B, max_len), :] = asnp(mu[a])
+                        state_var[a, i * B:min((i + 1) * B, max_len), :] = asnp(log_sigma[a])
+                        assert z_category[a].size()[0] == len(z_category[a])
+                        z_encoder = asnp(z_category[a].view(len(z_category[a]), C))
+                        z_encoder = z_category[a].cpu().data.view(z_category[a].size()[0], C).detach().numpy()
+                        z_prob[a, i * B:min((i + 1) * B, max_len), :] = z_encoder
+                        z_samp = z_smp[a].cpu().data.view(z_smp[a].size()[0], C).detach().numpy()
+                        z_sample[a, i * B:min((i + 1) * B, max_len), :] = z_samp
+                        data_low[a,  i * B:min((i + 1) * B, max_len), :] = asnp(x_low[a])
                         label = data_idx.numpy().astype(int)
-                        data_indx[i * batch_size:min((i + 1) * batch_size, max_len)] = label
-                        recon_cell[arm, i * batch_size:min((i + 1) * batch_size, max_len), :] = recon[arm].cpu().detach().numpy()
+                        data_indx[i * B:min((i + 1) * B, max_len)] = label
+                        recon_cell[a, i * B:min((i + 1) * B, max_len), :] = asnp(recon[a])
 
-                        for n in range(z_encoder.shape[0]):
-                            state_cat[arm, i * batch_size + n] = np.argmax(z_encoder[n, :]) + 1
-                            prob_cat[arm, i * batch_size + n] = np.max(z_encoder[n, :])
+                        assert z_encoder.shape[0] == len(z_encoder)
+                        for n in range(len(z_encoder)):
+                            state_cat[a, i * B + n] = np.argmax(z_encoder[n, :]) + 1
+                            prob_cat[a, i * B + n] = np.max(z_encoder[n, :])
 
                         if self.ref_prior:
-                            predicted_label[arm+1, i * batch_size:min((i + 1) * batch_size, max_len)] = np.argmax(z_encoder, axis=1) + 1
+                            predicted_label[a+1, i * B:min((i + 1) * B, max_len)] = np.argmax(z_encoder, axis=1) + 1
                         else:
-                            predicted_label[arm, i * batch_size:min((i + 1) * batch_size, max_len)] = np.argmax(z_encoder, axis=1) + 1
+                            predicted_label[a, i * B:min((i + 1) * B, max_len)] = np.argmax(z_encoder, axis=1) + 1
 
             else:
                 i = 0
-                data, data_idx = data_loader.dataset.tensors
+                data, data_idx = ldr.dataset.tensors
                 data = data.to(self.device)
                 data_idx = data_idx.to(int)
                 if self.ref_prior:
-                    c_bin = torch.FloatTensor(c_onehot[data_idx, :]).to(self.device)
-                    prior_c = torch.FloatTensor(c_p[data_idx, :]).to(self.device)
+                    c_bin = th.FloatTensor(c_onehot[data_idx, :]).to(self.device)
+                    prior_c = th.FloatTensor(c_p[data_idx, :]).to(self.device)
                 else:
                     c_bin = 0.
                     prior_c = 0.
-                trans_data = []
-                for arm in range(self.n_arm):
-                    trans_data.append(data)
+
+                trans_data = [data for _ in range(A)]
 
                 recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c=prior_c, eval=True, mask=pruning_mask)
                 loss, loss_arms, loss_joint, _, dist_z, d_qz, _, _, loglikelihood = self.model.loss(recon, p_x, r_x, trans_data, mu, log_sigma, z_category, z_smp, c_bin)
-                total_loss_val = loss.data.item()
-                total_dist_z = dist_z.data.item()
-                total_dist_qz = d_qz.data.item()
+                total_loss_val = loss.item()
+                total_dist_z = dist_z.item()
+                total_dist_qz = d_qz.item()
                 if self.ref_prior:
                     predicted_label[0, :] = np.argmax(c_p[data_idx, :], axis=1) + 1
 
-                for arm in range(self.n_arm):
-                    total_loss_rec[arm] = loss_arms[arm].data.item()
-                    total_loglikelihood[arm] = loglikelihood[arm].data.item()
+                for a in range(A):
+                    total_loss_rec[a] = loss_arms[a].item()
+                    total_loglikelihood[a] = loglikelihood[a].item()
 
-                for arm in range(self.n_arm):
-                    state_sample[arm, :, :] = state[arm].cpu().detach().numpy()
-                    state_mu[arm, :, :] = mu[arm].cpu().detach().numpy()
-                    state_var[arm, :, :] = log_sigma[arm].cpu().detach().numpy()
-                    z_encoder = z_category[arm].cpu().data.view(z_category[arm].size()[0], self.n_categories).detach().numpy()
-                    z_prob[arm, :, :] = z_encoder
-                    z_samp = z_smp[arm].cpu().data.view(z_smp[arm].size()[0], self.n_categories).detach().numpy()
-                    z_sample[arm, :, :] = z_samp
-                    data_low[arm, :, :] = x_low[arm].detach().cpu().numpy()
+                for a in range(A):
+                    state_sample[a, :, :] = asnp(state[a])
+                    state_mu[a, :, :] = asnp(mu[a])
+                    state_var[a, :, :] = asnp(log_sigma[a])
+                    assert z_category[a].size()[0] == len(z_category[a])
+                    z_encoder = asnp(z_category.view(len(z_category[a]), C)) # TODO: check
+                    z_prob[a, :, :] = z_encoder
+                    assert z_smp[a].size()[0] == len(z_smp[a])
+                    z_samp = asnp(z_smp[a].view(len(z_smp[a]), C)) # TODO: check
+                    z_sample[a, :, :] = z_samp
+                    data_low[a, :, :] = asnp(x_low[a])
                     label = data_idx.numpy().astype(int)
                     data_indx = label
-                    recon_cell[arm, :, :] = recon[arm].cpu().detach().numpy()
+                    recon_cell[a, :, :] = asnp(recon[a])
 
                     for n in range(z_encoder.shape[0]):
-                        state_cat[arm, n] = np.argmax(z_encoder[n, :]) + 1
-                        prob_cat[arm, n] = np.max(z_encoder[n, :])
+                        state_cat[a, n] = np.argmax(z_encoder[n, :]) + 1
+                        prob_cat[a, n] = np.max(z_encoder[n, :])
 
                     if self.ref_prior:
-                        predicted_label[arm+1, :] = np.argmax(z_encoder, axis=1) + 1
+                        predicted_label[a + 1, :] = np.argmax(z_encoder, axis=1) + 1
                     else:
-                        predicted_label[arm, ] = np.argmax(z_encoder, axis=1) + 1
+                        predicted_label[a, ] = np.argmax(z_encoder, axis=1) + 1
 
-
-        mean_test_rec = np.zeros(self.n_arm)
-        mean_total_loss_rec = np.zeros(self.n_arm)
-        mean_total_loglikelihood = np.zeros(self.n_arm)
-
-        for arm in range(self.n_arm):
-            mean_total_loss_rec[arm] = np.mean(np.array(total_loss_rec[arm]))
-            mean_total_loglikelihood[arm] = np.mean(np.array(total_loglikelihood[arm]))
- 
-
-        d_dict = dict()
-        d_dict['state_sample'] = state_sample
-        d_dict['state_mu'] = state_mu
-        d_dict['state_var'] = state_var
-        d_dict['state_cat'] = state_cat
-        d_dict['prob_cat'] = prob_cat
-        d_dict['total_loss_rec'] = mean_total_loss_rec
-        d_dict['total_likelihood'] = mean_total_loglikelihood
-        d_dict['total_dist_z'] = np.mean(np.array(total_dist_z))
-        d_dict['total_dist_qz'] = np.mean(np.array(total_dist_qz))
-        d_dict['mean_test_rec'] = mean_test_rec
-        d_dict['predicted_label'] = predicted_label
-        d_dict['data_indx'] = data_indx
-        d_dict['z_prob'] = z_prob
-        d_dict['z_sample'] = z_sample
-        d_dict['x_low'] = data_low
-        d_dict['recon_c'] = recon_cell
-        d_dict['prune_indx'] = prune_indx
-
-        return d_dict
+        return {
+            'state_sample': state_sample,
+            'state_mu': state_mu,
+            'state_var': state_var,
+            'state_cat': state_cat,
+            'prob_cat': prob_cat,
+            'total_loss_rec': np.array([np.mean(np.array(total_loss_rec[a])) for a in range(A)]),
+            'total_likelihood': np.array([np.mean(np.array(total_loglikelihood[a])) for a in range(A)]),
+            'total_dist_z': np.mean(np.array(total_dist_z)),
+            'total_dist_qz': np.mean(np.array(total_dist_qz)),
+            'mean_test_rec': np.zeros(A),
+            'predicted_label': predicted_label,
+            'data_indx': data_indx,
+            'z_prob': z_prob,
+            'z_sample': z_sample,
+            'x_low': data_low,
+            'recon_c': recon_cell,
+            'prune_indx': prune_indx
+        }
 
 
     def save_file(self, fname, **kwargs):

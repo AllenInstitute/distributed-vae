@@ -12,7 +12,7 @@ from tqdm import trange
 
 from dist.plot import noExt, mapv
 
-def mkVAE(saving_folder, input_dim, C, state_dim, arms, latent_dim):
+def mk_vae(saving_folder, input_dim, C, state_dim, arms, latent_dim):
   vae = cpl_mixVAE(saving_folder=saving_folder, device='cpu')
   vae.init_model(n_categories=C,
                      state_dim=state_dim,
@@ -65,19 +65,17 @@ def _avg_consensus(A):
 def _avg_consensus_all(A):
   return np.mean([sum(np.abs(np.diff(A[:, i]))) == 0 for i in range(A.shape[1])])
 
-def parseEpoch(s: str):
+def parse_epoch(s: str):
   try:
     return int(noExt(s).split('_epoch_')[-1])
   except:
     return s
 
-def updtK(dct, k, fn, l):
+def update_key(dct, k, fn, l):
   return dct.set(l, fn(dct[k]))
 
-# def mk_config(r: str) -> Mapping[str, Any]:
 
-
-def parseTOML(tf: str, sf: str) -> Mapping[str, Any]:
+def parse_toml(tf: str, sf: str) -> Mapping[str, Any]:
   config = get_paths(toml_file=tf, sub_file=sf)
   _trained = config[sf]['trained_model']
   _saving = config['paths']['main_dir'] / config[sf]['saving_path'] / _trained
@@ -86,7 +84,7 @@ def parseTOML(tf: str, sf: str) -> Mapping[str, Any]:
     'saving': _saving,
     'trained': _trained,
   }
-  return updtK(pmap(mapv(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_before_**', 'pat')
+  return update_key(pmap(mapv(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_before_**', 'pat')
 
 def lookup(ks, dct):
   return [dct[k] for k in ks]
@@ -99,28 +97,30 @@ def main():
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 5,
+    'arms': 2,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
   })
-  RUN = 2
+  RUN = 0
   
-  fs = parseTOML(TOML, SUB)
-  data, targets = lookup([DATA, TARGETS], load_data(fs.data))
+  config = parse_toml(TOML, SUB)
+  data, targets = lookup([DATA, TARGETS], load_data(config.data))
 
-  preds = summarize_inference(mkVAE(fs.saving, data.shape[1], **CFG), 
-                              max(glob.glob(fs.pat), key=parseEpoch), 
+  preds = summarize_inference(mk_vae(config.saving, data.shape[1], **CFG), 
+                              max(glob.glob(config.pat), key=parse_epoch), 
                               get_loaders(data, batch_size=B, seed=SEED)[-1])
 
-  avgMIs = [avg(mutinfo(preds['c_prob'][a], targets.astype(int))) for a in range(CFG.arms)]
+  mis = [avg(mutinfo(preds['c_prob'][a], targets.astype(int))) for a in range(CFG.arms)]
   
   consensus = avg_consensus(preds['pred_label'][0])
+
+  assert False
   res = {
     'pairwise': consensus['pairwise'],
     'all': consensus['all'],
-    'mi': avgMIs,
-    'avg_mi': np.mean(avgMIs).item(),
+    'mi': mis,
+    'avg_mi': np.mean(mis).item(),
     'arms': CFG.arms,
   }
   np.save(f'evaluation/A{CFG.arms}-RUN{RUN}.npy', res)
