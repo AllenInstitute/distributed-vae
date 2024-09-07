@@ -32,7 +32,7 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
     test_loss = [[] for _ in range(A)]
     prune_indx = []
     consensus = []
-    AvsB = []
+    a_vs_b = []
     sample_id = []
     data_rec = []
 
@@ -63,27 +63,25 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
             pred_a = predicted_label[a, :]
             for b in range(a + 1, A):
                 pred_b = predicted_label[b, :]
-                armA_vs_armB = np.zeros((C, C))
+                _a_vs_b = np.zeros((C, C))
 
                 for samp in range(pred_a.shape[0]):
-                    armA_vs_armB[pred_a[samp].astype(int) - 1, pred_b[samp].astype(int) - 1] += 1
+                    _a_vs_b[pred_a[samp].astype(int) - 1, pred_b[samp].astype(int) - 1] += 1
 
                 num_samp_arm = []
                 for c in range(C):
-                    num_samp_arm.append(max(armA_vs_armB[c, :].sum(), armA_vs_armB[:, c].sum()))
+                    num_samp_arm.append(max(_a_vs_b[c, :].sum(), _a_vs_b[:, c].sum()))
 
-                armA_vs_armB_norm = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
-                                         where=np.array(num_samp_arm) != 0)
+                _consensus = np.divide(_a_vs_b, np.array(num_samp_arm), out=np.zeros_like(_a_vs_b),
+                                         where=np.array(num_samp_arm) != 0)[:, nprune_indx][nprune_indx]
                 nprune_indx = np.where(np.isin(range(C), prune_indx[i]) == False)[0]
-                armA_vs_armB_norm = armA_vs_armB_norm[:, nprune_indx][nprune_indx]
-                armA_vs_armB = armA_vs_armB[:, nprune_indx][nprune_indx]
-                diag_term = np.diag(armA_vs_armB_norm)
-                ind_sort = np.argsort(diag_term)
-                consensus_min.append(np.min(diag_term))
-                con_mean = 1. - (sum(np.abs(predicted_label[0, :] - predicted_label[1, :]) > 0.) / predicted_label.shape[1])
-                consensus_mean.append(con_mean)
-                AvsB.append(armA_vs_armB)
-                consensus.append(armA_vs_armB_norm)
+                _a_vs_b = _a_vs_b[:, nprune_indx][nprune_indx]
+
+                consensus.append(_consensus)
+                consensus_min.append(np.min(np.diag(_consensus)))
+                consensus_mean.append(1. - (sum(np.abs(predicted_label[0, :] - predicted_label[1, :]) > 0.) / predicted_label.shape[1]))
+                a_vs_b.append(_a_vs_b)
+                
 
         # TODO: check
         if A == 1:
@@ -100,7 +98,7 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
         'num_pruned': n_pruned,
         'pred_label': label_pred,
         'consensus': consensus,
-        'armA_vs_armB': AvsB,
+        'armA_vs_armB': a_vs_b,
         'prune_indx': prune_indx,
         'nprune_indx': nprune_indx,
         'state_mu': evals['state_mu'],

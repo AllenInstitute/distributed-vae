@@ -2025,6 +2025,9 @@ class cpl_mixVAE:
                 for i, (data, data_idx) in enumerate(ldr):
                     data = data.to(self.device)
                     data_idx = data_idx.to(int)
+
+                    start = i * B
+                    end = min((i + 1) * B, max_len)
                     
                     if self.ref_prior:
                         c_bin = th.FloatTensor(c_onehot[data_idx, :]).to(self.device)
@@ -2049,29 +2052,28 @@ class cpl_mixVAE:
                         total_loglikelihood[a].append(loglikelihood[a].item())
 
                     for a in range(A):
-                        state_sample[a, i * B:min((i + 1) * B, max_len), :] = asnp(state[a])
-                        state_mu[a, i * B:min((i + 1) * B, max_len), :] = asnp(mu[a])
-                        state_var[a, i * B:min((i + 1) * B, max_len), :] = asnp(log_sigma[a])
+                        state_sample[a, start:end, :] = asnp(state[a])
+                        state_mu[a, start:end, max_len, :] = asnp(mu[a])
+                        state_var[a, start:end, :] = asnp(log_sigma[a])
                         assert z_category[a].size()[0] == len(z_category[a])
                         z_encoder = asnp(z_category[a].view(len(z_category[a]), C))
-                        z_encoder = z_category[a].cpu().data.view(z_category[a].size()[0], C).detach().numpy()
-                        z_prob[a, i * B:min((i + 1) * B, max_len), :] = z_encoder
-                        z_samp = z_smp[a].cpu().data.view(z_smp[a].size()[0], C).detach().numpy()
-                        z_sample[a, i * B:min((i + 1) * B, max_len), :] = z_samp
-                        data_low[a,  i * B:min((i + 1) * B, max_len), :] = asnp(x_low[a])
+                        z_prob[a, start:end, :] = z_encoder
+                        z_samp = asnp(z_smp[a].view(len(z_smp[a]), C))
+                        z_sample[a, start:end, max_len, :] = z_samp
+                        data_low[a,  start:end, :] = asnp(x_low[a])
                         label = data_idx.numpy().astype(int)
-                        data_indx[i * B:min((i + 1) * B, max_len)] = label
-                        recon_cell[a, i * B:min((i + 1) * B, max_len), :] = asnp(recon[a])
+                        data_indx[start:end, max_len] = label
+                        recon_cell[a, start:end, :] = asnp(recon[a])
 
                         assert z_encoder.shape[0] == len(z_encoder)
                         for n in range(len(z_encoder)):
-                            state_cat[a, i * B + n] = np.argmax(z_encoder[n, :]) + 1
-                            prob_cat[a, i * B + n] = np.max(z_encoder[n, :])
+                            state_cat[a, start + n] = np.argmax(z_encoder[n, :]) + 1
+                            prob_cat[a, start + n] = np.max(z_encoder[n, :])
 
                         if self.ref_prior:
-                            predicted_label[a+1, i * B:min((i + 1) * B, max_len)] = np.argmax(z_encoder, axis=1) + 1
+                            predicted_label[a+1, start:end] = np.argmax(z_encoder, axis=1) + 1
                         else:
-                            predicted_label[a, i * B:min((i + 1) * B, max_len)] = np.argmax(z_encoder, axis=1) + 1
+                            predicted_label[a, start:end] = np.argmax(z_encoder, axis=1) + 1
 
             else:
                 i = 0

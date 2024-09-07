@@ -25,7 +25,7 @@ cat << EOF > $FILE
 
 source ~/.bashrc
 
-mamba activate mdist-mmidas
+mamba activate mdist-mmidasp
 
 python -m dist.train --n_arm $ARMS --use-wandb --gpus 1 --n_epoch $EPOCHS
 EOF
