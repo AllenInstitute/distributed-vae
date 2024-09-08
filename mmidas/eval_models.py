@@ -72,9 +72,9 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
                 for c in range(C):
                     num_samp_arm.append(max(_a_vs_b[c, :].sum(), _a_vs_b[:, c].sum()))
 
+                nprune_indx = np.where(np.isin(range(C), prune_indx[i]) == False)[0]
                 _consensus = np.divide(_a_vs_b, np.array(num_samp_arm), out=np.zeros_like(_a_vs_b),
                                          where=np.array(num_samp_arm) != 0)[:, nprune_indx][nprune_indx]
-                nprune_indx = np.where(np.isin(range(C), prune_indx[i]) == False)[0]
                 _a_vs_b = _a_vs_b[:, nprune_indx][nprune_indx]
 
                 consensus.append(_consensus)

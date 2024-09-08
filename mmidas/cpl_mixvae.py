@@ -1994,22 +1994,22 @@ class cpl_mixVAE:
         prune_indx = np.where(bias == 0.)[0]
 
         # Initialize arrays for storing evaluation results
-        max_len = len(ldr.dataset)
-        recon_cell = np.zeros((A, max_len, self.input_dim))
-        p_cell = np.zeros((A, max_len, self.input_dim))
-        state_sample = np.zeros((A, max_len, self.state_dim))
-        state_mu = np.zeros((A, max_len, self.state_dim))
-        state_var = np.zeros((A, max_len, self.state_dim))
-        z_prob = np.zeros((A, max_len, C))
-        z_sample = np.zeros((A, max_len, C))
-        data_low = np.zeros((A, max_len, self.lowD_dim))
-        state_cat = np.zeros([A, max_len])
-        prob_cat = np.zeros([A, max_len])
+        N = len(ldr.dataset)
+        recon_cell = np.zeros((A, N, self.input_dim))
+        p_cell = np.zeros((A, N, self.input_dim))
+        state_sample = np.zeros((A, N, self.state_dim))
+        state_mu = np.zeros((A, N, self.state_dim))
+        state_var = np.zeros((A, N, self.state_dim))
+        z_prob = np.zeros((A, N, C))
+        z_sample = np.zeros((A, N, C))
+        data_low = np.zeros((A, N, self.lowD_dim))
+        state_cat = np.zeros([A, N])
+        prob_cat = np.zeros([A, N])
         if self.ref_prior:
-            predicted_label = np.zeros((A + 1, max_len))
+            predicted_label = np.zeros((A + 1, N))
         else:
-            predicted_label = np.zeros((A, max_len))
-        data_indx = np.zeros(max_len)
+            predicted_label = np.zeros((A, N))
+        data_indx = np.zeros(N)
         total_loss_val = []
         total_dist_z = []
         total_dist_qz = []
@@ -2027,7 +2027,7 @@ class cpl_mixVAE:
                     data_idx = data_idx.to(int)
 
                     start = i * B
-                    end = min((i + 1) * B, max_len)
+                    end = min((i + 1) * B, N)
                     
                     if self.ref_prior:
                         c_bin = th.FloatTensor(c_onehot[data_idx, :]).to(self.device)
@@ -2045,7 +2045,7 @@ class cpl_mixVAE:
                     total_dist_qz.append(d_qz.item() if isinstance(d_qz, torch.Tensor) else d_qz)
 
                     if self.ref_prior:
-                        predicted_label[0, i * B:min((i + 1) * B, max_len)] = np.argmax(c_p[data_idx, :], axis=1) + 1
+                        predicted_label[0, start:end] = np.argmax(c_p[data_idx, :], axis=1) + 1
 
                     for a in range(A):
                         total_loss_rec[a].append(loss_arms[a].item())
@@ -2053,16 +2053,16 @@ class cpl_mixVAE:
 
                     for a in range(A):
                         state_sample[a, start:end, :] = asnp(state[a])
-                        state_mu[a, start:end, max_len, :] = asnp(mu[a])
+                        state_mu[a, start:end, :] = asnp(mu[a])
                         state_var[a, start:end, :] = asnp(log_sigma[a])
                         assert z_category[a].size()[0] == len(z_category[a])
                         z_encoder = asnp(z_category[a].view(len(z_category[a]), C))
                         z_prob[a, start:end, :] = z_encoder
                         z_samp = asnp(z_smp[a].view(len(z_smp[a]), C))
-                        z_sample[a, start:end, max_len, :] = z_samp
+                        z_sample[a, start:end, :] = z_samp
                         data_low[a,  start:end, :] = asnp(x_low[a])
                         label = data_idx.numpy().astype(int)
-                        data_indx[start:end, max_len] = label
+                        data_indx[start:end] = label
                         recon_cell[a, start:end, :] = asnp(recon[a])
 
                         assert z_encoder.shape[0] == len(z_encoder)
