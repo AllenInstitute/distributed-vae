@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 import numpy as np
 import torch
@@ -32,6 +32,39 @@ class VAEConfig:
     n_pr: int = 0
     momentum: float = 0.01
     mode: str = 'MSE'
+
+def binarize(x, eps):
+    return th.where(x > eps, 1., 0.)
+
+def kl(mean: th.Tensor, logvar: th.Tensor) -> th.Tensor:
+    return (-0.5 * th.mean(1 + logvar - mean.pow(2) - logvar.exp(), dim=0)).sum()
+
+def arm_combs(A: int) -> int:
+    if A > 1:
+        assert (A * (A - 1)) % 2 == 0
+    return max(A * (A - 1) / 2, 1)
+
+def l2_dist(a: th.Tensor, b: th.Tensor) -> th.Tensor:
+    return th.norm(a - b, p=2, dim=-1).pow(2)
+
+def simplex_dist(a: tuple[th.Tensor, th.Tensor], b: tuple[th.Tensor, th.Tensor]) -> th.Tensor:
+    loga, inv_vara = a
+    logb, inv_varb = b
+    return l2_dist(loga * inv_vara, logb * inv_varb)
+
+def neg_entropy(p: th.Tensor, logp: th.Tensor) -> th.Tensor:
+    return th.sum(p * logp, dim=-1)
+
+def neg_joint_entropy(a: tuple[th.Tensor, th.Tensor], b: tuple[th.Tensor, th.Tensor]) -> th.Tensor:
+    return neg_entropy(*a).mean() + neg_entropy(*b).mean()
+
+def inv_var(p: th.Tensor, eps: float) -> th.Tensor:
+    return (1 / (p.var(0) + eps)).repeat(p.size(0), 1).sqrt()
+
+def avg[T](x: List[T]) -> T:
+    return sum(x) / len(x)
+
+Loss = Literal['MSE', 'ZINB']
 
 class mixVAE_model(nn.Module):
     """
@@ -166,7 +199,7 @@ class mixVAE_model(nn.Module):
     def decoder_zinb(self, c, s, arm):
         x = self._decode(c, s, arm)
         return (F.relu(self.fc11[arm](x)), 
-                th.sigmoid(self.fc11_p[arm](x)), 
+                th.sigmoid(self.fc11_p[arm](x)),
                 th.sigmoid(self.fc11_r[arm](x)))
 
     def forward(self, x, temp, prior_c=[], eval=False, mask=None):
@@ -187,56 +220,60 @@ class mixVAE_model(nn.Module):
             log_var: list of log of variance of the state variable for all arms.
             log_qc: list of log-likelihood value of categorical variables in a batch for all arms.
         """
-        A = self.n_arm
+        assert not self.loss_mode == "ZINB", "ZINB not implemented"
+        assert self.varitional, "Non-variational not implemented"
+
         C = self.n_categories
 
-        x_rec = [None] * A
-        zinb_pi = [None] * A
-        zinb_r = [None] * A
-        s, c = [None] * A, [None] * A
-        mu, log_var = [None] * A, [None] * A
-        qc = [None] * A
-        x_low, c_probs = [None] * A, [None] * A
+        xs = x
 
-
-        for a in range(A):
-            x_low[a], c_probs[a] = self.encoder(x[a], a)
+        x_recs = []
+        x_lows = []
+        cs, ss = [], []
+        c_smps = []
+        s_means, s_logvars = [], []
+        c_probs = []
+        for a, x in enumerate(xs):
+            x_low, c_prob = self.encoder(x, a)
 
             if mask is not None:
-                qc_tmp = F.softmax(c_probs[a][:, mask] / self.tau, dim=-1)
-                qc[a] = th.zeros((c_probs[a].size(0), c_probs[a].size(1)), device=self.device)
-
-                qc[a][:, mask] = qc_tmp
+                c = th.zeros((c_prob.size(0), c_prob.size(1)), device=self.device)
+                c[:, mask] = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
             else:
-                qc[a] = F.softmax(c_probs[a] / self.tau, dim=-1)
+                c = F.softmax(c_prob / self.tau, dim=-1)
 
-            q_ = qc[a].view(c_probs[a].size(0), 1, C)
-
+            logits = c.view(c_prob.size(0), 1, C)
             if eval:
-                c[a] = self.gumbel_softmax(q_, 1, C, temp, hard=True, gumble_noise=False)
+                c_smp = self.gumbel_softmax(logits, 1, C, temp, hard=True, gumble_noise=False)
             else:
-                c[a] = self.gumbel_softmax(q_, 1, C, temp, hard=self.hard)
+                c_smp = self.gumbel_softmax(logits, 1, C, temp, hard=self.hard)
 
             if self.ref_prior:
-                y = th.cat((x_low[a], prior_c), dim=1)
+                y = th.cat((x_low, prior_c), dim=1)
             else:
-                y = th.cat((x_low[a], c[a]), dim=1)
+                y = th.cat((x_low, c_smp), dim=1)
 
             if self.varitional:
-                mu[a], var = self.intermed(y, a)
-                log_var[a] = (var + self.eps).log()
-                s[a] = self.reparam_trick(mu[a], log_var[a])
+                s_mean, s_var = self.intermed(y, a)
+                s_logvar = (s_var + self.eps).log()
+                s = self.reparam_trick(s_mean, s_logvar)
             else:
-                mu[a] = self.intermed(y, a)
-                log_var[a] = 0. * mu[a]
-                s[a] = self.intermed(y, a)
+                s_mean = self.intermed(y, a)
+                s_logvar = th.zeros_like(s_mean)
+                s = self.intermed(y, a)
             
-            if self.loss_mode == 'ZINB':
-                x_rec[a], zinb_pi[a], zinb_r[a] = self.decoder_zinb(c[a], s[a], a)
-            else:
-                x_rec[a] = self.decoder(c[a], s[a], a)
+            x_rec = self.decoder(c_smp, s, a)
 
-        return x_rec, zinb_pi, zinb_r, x_low, qc, s, c, mu, log_var, c_probs
+            x_recs.append(x_rec)
+            x_lows.append(x_low)
+            cs.append(c)
+            ss.append(s)
+            c_smps.append(c_smp)
+            s_means.append(s_mean)
+            s_logvars.append(s_logvar)
+            c_probs.append(c_prob)
+            
+        return x_recs, [], [], x_lows, cs, ss, c_smps, s_means, s_logvars, c_probs
 
 
     def state_changes(self, x, d_s, temp, n_samp=100):
@@ -384,71 +421,66 @@ class mixVAE_model(nn.Module):
             loglikelihood: list of log-likelihood values for all arms
 
         """
-        loss_indep, KLD_cont = [None] * self.n_arm, [None] * self.n_arm
-        log_qz, l_rec = [None] * self.n_arm, [None] * self.n_arm
-        var_qz, var_qz_inv = [None] * self.n_arm, [None] * self.n_arm
-        mu_in, var_in = [None] * self.n_arm, [None] * self.n_arm
-        mu_tmp, var_tmp = [None] * self.n_arm, [None] * self.n_arm
-        loglikelihood = [None] * self.n_arm
-        batch_size, n_cat = c[0].size()
-        neg_joint_entropy, z_distance_rep, z_distance, dist_a = [], [], [], []
+        A = self.n_arm
+        C = self.n_categories
+        B = x[0].size(0)
 
-        for arm_a, x_ in enumerate(x):
-            loglikelihood[arm_a] = F.mse_loss(recon_x[arm_a], x_, reduction='mean') + x_.size(0) * np.log(2 * np.pi)
+        xs = x
+        x_recs = recon_x
+        s_means = mu
+        s_logvars = log_sigma
+        _c = qc
+        c_smps = c
+        c_prior = prior_c
+
+        lls = [] # log-likelihood
+        loss_recs, loss_inds, kl_ss = [], [], []
+        c_ents, c_l2_dists, c_dists = [], [], []
+
+        # TODO: this loop is really easy to parallelize/refactor with attention
+        # q, k, v = ((c, logc, inv_var_c), (c, logc, inv_var_c), (c, logc, inv_var_c)). maybe add kernels too?
+        for a, (x, x_rec, s_mean, s_logvar, c_a, c_smp_a) in enumerate(zip(xs, x_recs, s_means, s_logvars, _c, c_smps)): # a ∈ 0..A-1
+            assert x.size(0) == B
+
+            ll = F.mse_loss(x_rec, x, reduction='mean') + B * np.log(2 * np.pi)
             if self.loss_mode == 'MSE':
-                l_rec[arm_a] = 0.5 * F.mse_loss(recon_x[arm_a], x_, reduction='sum') / (x_.size(0))
-                rec_bin = torch.where(recon_x[arm_a] > 0.1, 1., 0.)
-                x_bin = torch.where(x_ > 0.1, 1., 0.)
-                l_rec[arm_a] += 0.5 * F.binary_cross_entropy(rec_bin, x_bin)
+                loss_rec = (0.5 * F.mse_loss(x_rec, x, reduction='sum') / B) + (0.5 * F.binary_cross_entropy(binarize(x_rec, 0.1), binarize(x, 0.1)))
             elif self.loss_mode == 'ZINB':
-                l_rec[arm_a] = zinb_loss(recon_x[arm_a], p_x[arm_a], r_x[arm_a], x_)
+                assert False, "ZINB not implemented"
+                loss_rec = zinb_loss(x_rec, p_x[a], r_x[a], x)
+            kl_s = kl(s_mean, s_logvar) if self.varitional else [0.]
+            loss_ind = loss_rec + self.beta * kl_s
 
-            if self.varitional:
-                KLD_cont[arm_a] = (-0.5 * torch.mean(1 + log_sigma[arm_a] - mu[arm_a].pow(2) - log_sigma[arm_a].exp(), dim=0)).sum()
-                loss_indep[arm_a] = l_rec[arm_a] + self.beta * KLD_cont[arm_a]
-            else:
-                loss_indep[arm_a] = l_rec[arm_a]
-                KLD_cont[arm_a] = [0.]
+            lls.append(ll)
+            loss_recs.append(loss_rec)
+            kl_ss.append(kl_s)
+            loss_inds.append(loss_ind)
 
-            log_qz[0] = torch.log(qc[arm_a] + self.eps)
-            var_qz0 = qc[arm_a].var(0)
+            # you can decouple these two parts of the loss()
 
-            var_qz_inv[0] = (1 / (var_qz0 + self.eps)).repeat(qc[arm_a].size(0), 1).sqrt()
+            logc_a = th.log(c_a + self.eps)
+            inv_var_c_a = inv_var(c_a, self.eps)
+            for c_b, c_smp_b in zip(_c[a + 1:], c_smps[a + 1:]): # b ∈ a+1..A-1
+                logc_b = th.log(c_b + self.eps)
+                inv_var_c_b = inv_var(c_b, self.eps)
 
-            for arm_b in range(arm_a + 1, self.n_arm):
-                log_qz[1] = torch.log(qc[arm_b] + self.eps)
-                tmp_entropy = (torch.sum(qc[arm_a] * log_qz[0], dim=-1)).mean() + \
-                              (torch.sum(qc[arm_b] * log_qz[1], dim=-1)).mean()
-                neg_joint_entropy.append(tmp_entropy)
-                # var = qc[arm_b].var(0)
-                var_qz1 = qc[arm_b].var(0)
-                var_qz_inv[1] = (1 / (var_qz1 + self.eps)).repeat(qc[arm_b].size(0), 1).sqrt()
-
-                # distance between z_1 and z_2 i.e., ||z_1 - z_2||^2
-                # Euclidean distance
-                z_distance_rep.append((torch.norm((c[arm_a] - c[arm_b]), p=2, dim=1).pow(2)).mean())
-                z_distance.append((torch.norm((log_qz[0] * var_qz_inv[0]) - (log_qz[1] * var_qz_inv[1]), p=2, dim=1).pow(2)).mean())
+                c_ents.append(neg_joint_entropy((c_a, logc_a), (c_b, logc_b)))
+                c_l2_dists.append(l2_dist(c_smp_a, c_smp_b).mean())
+                c_dists.append(simplex_dist((logc_a, inv_var_c_a), (logc_b, inv_var_c_b)).mean())
 
             if self.ref_prior:
-                n_comb = max(self.n_arm * (self.n_arm + 1) / 2, 1)
-                scaler = self.n_arm
-                # distance between z_1 and z_2 i.e., ||z_1 - z_2||^2
-                # Euclidean distance
-                z_distance_rep.append((torch.norm((c[arm_a] - prior_c), p=2, dim=1).pow(2)).mean())
-                tmp_entropy = (torch.sum(qc[arm_a] * log_qz[0], dim=-1)).mean()
-                neg_joint_entropy.append(tmp_entropy)
-                qc_bin = self.gumbel_softmax(qc[arm_a], 1, self.n_categories, 1, hard=True, gumble_noise=False)
-                z_distance.append(self.lam_pc * F.binary_cross_entropy(qc_bin, prior_c))
-            else:
-                n_comb = max(self.n_arm * (self.n_arm - 1) / 2, 1)
-                scaler = max((self.n_arm - 1), 1)
+                c_bin = self.gumbel_softmax(c_a, 1, C, 1, hard=True, gumble_noise=False)
 
+                c_ents.append(neg_entropy(c_a, logc_a).mean())
+                c_l2_dists.append(l2_dist(c_smp_a, c_prior).mean())
+                c_dists.append(self.lam_pc * F.binary_cross_entropy(c_bin, c_prior))
 
-        loss_joint = self.lam * sum(z_distance) + sum(neg_joint_entropy) + n_comb * ((n_cat / 2) * (np.log(2 * np.pi)) - 0.5 * np.log(2 * self.lam))
-
-        loss = scaler * sum(loss_indep) + loss_joint
-
-        return loss, l_rec, loss_joint, sum(neg_joint_entropy) / n_comb, sum(z_distance) / n_comb, sum(z_distance_rep) / n_comb, KLD_cont, var_qz0.min(), loglikelihood
+        assert not self.ref_prior
+        sum_c_dists = sum(c_dists)
+        sum_c_ents = sum(c_ents)
+        loss_joints = self.lam * sum_c_dists + sum_c_ents + arm_combs(A) * ((C / 2) * (np.log(2 * np.pi)) - 0.5 * np.log(2 * self.lam))
+        losses = max((A - 1), 1) * sum(loss_inds) + loss_joints
+        return losses, th.tensor(loss_recs), loss_joints, sum_c_ents / len(c_ents),  sum_c_dists / len(c_dists), avg(c_l2_dists), kl_ss, [], lls
 
 
 def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):

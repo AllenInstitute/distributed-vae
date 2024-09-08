@@ -3,6 +3,7 @@ from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 from scipy.special import softmax
 import anndata
 import torch
+import torch as th
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from sklearn.model_selection import train_test_split
@@ -219,9 +220,7 @@ def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9, us
         tt_size = int(train_size * dataset.shape[0])
         train_set, test_set, train_ind, test_ind = data_gen(dataset, tt_size, seed)
 
-    train_set_torch = torch.FloatTensor(train_set)
-    train_ind_torch = torch.FloatTensor(train_ind)
-    train_data = TensorDataset(train_set_torch, train_ind_torch)
+    train_data = TensorDataset(th.tensor(train_set, dtype=th.float32), th.tensor(train_ind, dtype=th.float32))
     # train_loader = DataLoader(train_data, batch_size=batch_size, 
     #                           shuffle=True, drop_last=True, 
     #                           pin_memory=True, num_workers=8,
@@ -233,10 +232,8 @@ def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9, us
     train_loader = DataLoader(train_data, batch_size=batch_size, 
                         shuffle=True, drop_last=True, 
                         pin_memory=True, persistent_workers=True, num_workers=2, sampler=train_sampler)
-
-    test_set_torch = torch.FloatTensor(test_set)
-    test_ind_torch = torch.FloatTensor(test_ind)
-    test_data = TensorDataset(test_set_torch, test_ind_torch)
+    
+    test_data = TensorDataset(th.tensor(test_set, dtype=th.float32), th.tensor(test_ind, dtype=th.float32))
     if world_size > 1 and use_dist_sampler:
         test_sampler = DistributedSampler(test_data, rank=rank, num_replicas=world_size, shuffle=True)
     else:
@@ -245,8 +242,8 @@ def get_loaders(dataset, label=[], seed=None, batch_size=128, train_size=0.9, us
                             sampler=test_sampler)
     # test_loader = DataLoader(test_data, batch_size=1, shuffle=True, drop_last=False, pin_memory=True, num_workers=8, persistent_workers=True, prefetch_factor=4)
 
-    data_set_troch = torch.FloatTensor(dataset)
-    all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
+    data_set_troch = th.tensor(dataset, dtype=th.float32)
+    all_ind_torch = th.tensor(range(dataset.shape[0]), dtype=th.float32)
     all_data = TensorDataset(data_set_troch, all_ind_torch)
     alldata_loader = DataLoader(all_data, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=2)
 
