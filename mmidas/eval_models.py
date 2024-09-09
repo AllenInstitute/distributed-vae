@@ -2,9 +2,10 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from .cpl_mixvae import cpl_mixVAE
+from torch.utils.data import DataLoader
 
 
-def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
+def summarize_inference(cpl: cpl_mixVAE, files, dl: DataLoader, saving_folder=''):
     
     """
         Inference summary for the cpl model
@@ -41,7 +42,7 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
     for i, file in enumerate(files):
         print(f'Model {file[file.rfind('/'):]}')
         cpl.load_model(file)
-        evals = cpl.eval_model(data)
+        evals = cpl.eval_model(dl)
 
         x_low = evals['x_low']
         predicted_label = evals['predicted_label']
@@ -102,7 +103,6 @@ def summarize_inference(cpl: cpl_mixVAE, files, data, saving_folder=''):
         'prune_indx': prune_indx,
         'nprune_indx': nprune_indx,
         'state_mu': evals['state_mu'],
-        'state_sample': evals['state_sample'],
         'state_var': evals['state_var'],
         'sample_id': sample_id,
         'c_prob': c_prob,

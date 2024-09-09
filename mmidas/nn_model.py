@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Sequence
 
 import numpy as np
 import torch
@@ -8,6 +8,10 @@ from torch import nn
 from torch.nn import ModuleList as mdl
 from torch.autograd import Variable
 from torch.nn import functional as F
+
+
+
+
 
 @dataclass
 class VAEConfig:
@@ -61,7 +65,7 @@ def neg_joint_entropy(a: tuple[th.Tensor, th.Tensor], b: tuple[th.Tensor, th.Ten
 def inv_var(p: th.Tensor, eps: float) -> th.Tensor:
     return (1 / (p.var(0) + eps)).repeat(p.size(0), 1).sqrt()
 
-def avg[T](x: List[T]) -> T:
+def avg[T](x: Sequence[T]) -> T:
     return sum(x) / len(x)
 
 Loss = Literal['MSE', 'ZINB']
@@ -226,19 +230,23 @@ class mixVAE_model(nn.Module):
         C = self.n_categories
 
         xs = x
+        c_prior = prior_c
 
-        x_recs = []
-        x_lows = []
-        cs, ss = [], []
-        c_smps = []
+        x_recs, x_lows = [], []
+        cs = []
+        s_smps, c_smps = [], []
         s_means, s_logvars = [], []
         c_probs = []
-        for a, x in enumerate(xs):
+        for a, x in enumerate(xs): # arm, data
             x_low, c_prob = self.encoder(x, a)
 
             if mask is not None:
+                c_tmp = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
                 c = th.zeros((c_prob.size(0), c_prob.size(1)), device=self.device)
-                c[:, mask] = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
+                c[:, mask] = c_tmp
+
+                # c = th.zeros((c_prob.size(0), c_prob.size(1)), device=self.device)
+                # c[:, mask] = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
             else:
                 c = F.softmax(c_prob / self.tau, dim=-1)
 
@@ -248,32 +256,29 @@ class mixVAE_model(nn.Module):
             else:
                 c_smp = self.gumbel_softmax(logits, 1, C, temp, hard=self.hard)
 
-            if self.ref_prior:
-                y = th.cat((x_low, prior_c), dim=1)
-            else:
-                y = th.cat((x_low, c_smp), dim=1)
 
+            y = th.cat((x_low, c_prior if self.ref_prior else c_smp), dim=1)
             if self.varitional:
                 s_mean, s_var = self.intermed(y, a)
                 s_logvar = (s_var + self.eps).log()
-                s = self.reparam_trick(s_mean, s_logvar)
+                s_smp = self.reparam_trick(s_mean, s_logvar)
             else:
                 s_mean = self.intermed(y, a)
-                s_logvar = th.zeros_like(s_mean)
-                s = self.intermed(y, a)
+                s_logvar = 0. * s_mean
+                s_smp = self.intermed(y, a)
             
-            x_rec = self.decoder(c_smp, s, a)
+            x_rec = self.decoder(c_smp, s_smp, a)
 
             x_recs.append(x_rec)
             x_lows.append(x_low)
             cs.append(c)
-            ss.append(s)
+            s_smps.append(s_smp)
             c_smps.append(c_smp)
             s_means.append(s_mean)
             s_logvars.append(s_logvar)
             c_probs.append(c_prob)
             
-        return x_recs, [], [], x_lows, cs, ss, c_smps, s_means, s_logvars, c_probs
+        return x_recs, [], [], x_lows, th.stack(cs), s_smps, c_smps, s_means, s_logvars, c_probs
 
 
     def state_changes(self, x, d_s, temp, n_samp=100):
@@ -347,7 +352,6 @@ class mixVAE_model(nn.Module):
             -(log(-log(U))) (tensor)
         """
         U = th.rand(shape, device=self.device)
-
         return -Variable(th.log(-th.log(U + self.eps) + self.eps))
 
 

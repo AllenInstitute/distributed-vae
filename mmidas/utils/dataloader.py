@@ -76,7 +76,7 @@ def load_data(datafile, n_gene=0, gene_id=[], rmv_type=[], min_num=10, eps=1e-1,
     data['n_type'] = len(np.unique(data['cluster_label']))
 
     print(' --------- Data Summary --------- ')
-    print(f'# cell types: {len(np.unique(data["cluster_label"]))}, # cells: {data["log1p"].shape[0]}, # genes:{len(data["gene_id"])}')
+    print(f'# cell types: {len(np.unique(data["cluster_label"]))} | # cells: {data["log1p"].shape[0]} | # genes:{len(data["gene_id"])}')
     
     return data
 

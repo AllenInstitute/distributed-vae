@@ -97,12 +97,13 @@ def main():
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 2,
+    'arms': 5,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
   })
-  RUN = 0
+  RUN = 2
+  EPOCHS = 200000
   
   config = parse_toml(TOML, SUB)
   data, targets = lookup([DATA, TARGETS], load_data(config.data))
@@ -115,7 +116,6 @@ def main():
   
   consensus = avg_consensus(preds['pred_label'][0])
 
-  assert False
   res = {
     'pairwise': consensus['pairwise'],
     'all': consensus['all'],
@@ -123,7 +123,7 @@ def main():
     'avg_mi': np.mean(mis).item(),
     'arms': CFG.arms,
   }
-  np.save(f'evaluation/A{CFG.arms}-RUN{RUN}.npy', res)
+  np.save(f'evaluation/A{CFG.arms}-RUN{RUN}-E{EPOCHS}.npy', res)
   print(res)
 
 if __name__ == '__main__':
