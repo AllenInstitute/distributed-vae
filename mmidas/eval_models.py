@@ -65,7 +65,6 @@ def summarize_inference(cpl: cpl_mixVAE, files, dl: DataLoader, saving_folder=''
             for b in range(a + 1, A):
                 pred_b = predicted_label[b, :]
                 _a_vs_b = np.zeros((C, C))
-
                 for samp in range(pred_a.shape[0]):
                     _a_vs_b[pred_a[samp].astype(int) - 1, pred_b[samp].astype(int) - 1] += 1
 
@@ -88,11 +87,10 @@ def summarize_inference(cpl: cpl_mixVAE, files, dl: DataLoader, saving_folder=''
         if A == 1:
             nprune_indx = np.where(np.isin(range(C), prune_indx[i]) == False)[0]
         n_pruned.append(list(range(C)))
-        plt.close()
 
     summary = {
         'recon_loss': test_loss,
-        'dc': test_dist_c,
+        'dc': test_dist_c, #
         'd_qc': test_dist_qc,
         'con_min': consensus_min,
         'con_mean': consensus_mean,

@@ -925,17 +925,15 @@ class cpl_mixVAE:
         prune_indx = np.where(bias == 0.)[0]
 
         # Initialize arrays for storing evaluation results
-        recon_cell = np.zeros((A, N, D))
+        x_recs = np.zeros((A, N, D))
         s_means = np.zeros((A, N, S))
         s_logvars = np.zeros((A, N, S))
         cs = np.zeros((A, N, C))
-        z_sample = np.zeros((A, N, C))
+        c_smps = np.zeros((A, N, C))
         x_lows = np.zeros((A, N, D_low))
         state_cat = np.zeros([A, N])
         prob_cat = np.zeros([A, N])
         predicted_label = np.zeros((A + self.ref_prior, N))
-
-        s_smps = []
 
         data_indx = np.zeros(N)
         losses = []
@@ -971,32 +969,25 @@ class cpl_mixVAE:
                 if self.ref_prior:
                     predicted_label[0, n_fst:n_lst] = np.argmax(c_p[data_idx, :], axis=1) + 1
 
-                for a in range(A):
-                    loss_recs[a].append(_loss_recs[a].item())
-                    lls[a].append(_lls[a].item())
+                for a, (loss_rec, ll) in enumerate(zip(_loss_recs, _lls)):
+                    loss_recs[a].append(loss_rec.item())
+                    lls[a].append(ll.item())
 
-                for a in range(A):
-                    s_means[a, n_fst:n_lst, :] = asnp(_s_means[a])
-                    s_logvars[a, n_fst:n_lst, :] = asnp(_s_logvars[a])
-
-                    print(_cs.shape, _cs[a].shape)
-                    print(_cs.view(len(_cs[a]), C).shape)
-
-                    cs[a, n_fst:n_lst, :] = asnp(_cs[a])
-                    print(_c_smps[a].shape)
-                    z_samp = asnp(_c_smps[a].view(len(_c_smps[a]), C))
-                    z_sample[a, n_fst:n_lst, :] = z_samp
-                    x_lows[a,  n_fst:n_lst, :] = asnp(_x_lows[a])
+                for a, (s_mean, s_logvar, c, c_smp, x_low, x_rec) in enumerate(map(lambda ys: map(asnp, ys), zip(_s_means, _s_logvars, _cs, _c_smps, _x_lows, _x_recs))):
+                    s_means[a, n_fst:n_lst, :] = s_mean
+                    s_logvars[a, n_fst:n_lst, :] = s_logvar
+                    cs[a, n_fst:n_lst, :] = c
+                    c_smps[a, n_fst:n_lst, :] = c_smp
+                    x_lows[a,  n_fst:n_lst, :] = x_low
+                    x_recs[a, n_fst:n_lst, :] = x_rec
                     data_indx[n_fst:n_lst] = data_idx.numpy().astype(int)
-                    recon_cell[a, n_fst:n_lst, :] = asnp(_x_recs[a])
-                    for n in range(len(_cs[a])):
-                        state_cat[a, n_fst + n] = np.argmax(_cs[a][n, :]) + 1
-                        prob_cat[a, n_fst + n] = np.max(_cs[a][n, :])
-
+                    for n, c_n in enumerate(c):
+                        state_cat[a, n_fst + n] = np.argmax(c_n) + 1
+                        prob_cat[a, n_fst + n] = np.max(c_n)
                     if self.ref_prior:
-                        predicted_label[a+1, n_fst:n_lst] = np.argmax(_cs[a], axis=1) + 1
+                        predicted_label[a+1, n_fst:n_lst] = np.argmax(c, axis=-1) + 1
                     else:
-                        predicted_label[a, n_fst:n_lst] = np.argmax(_cs[a], axis=1) + 1
+                        predicted_label[a, n_fst:n_lst] = np.argmax(c, axis=-1) + 1
 
         return {
             'state_mu': s_means,
@@ -1011,9 +1002,9 @@ class cpl_mixVAE:
             'predicted_label': predicted_label,
             'data_indx': data_indx,
             'z_prob': cs,
-            'z_sample': z_sample,
+            'z_sample': c_smps,
             'x_low': x_lows,
-            'recon_c': recon_cell,
+            'recon_c': x_recs,
             'prune_indx': prune_indx
         }
 

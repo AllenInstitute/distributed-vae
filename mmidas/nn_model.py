@@ -121,6 +121,7 @@ class mixVAE_model(nn.Module):
         super(mixVAE_model, self).__init__()
         self.input_dim = input_dim
         self.fc_dim = fc_dim
+        self.lowD_dim = lowD_dim
         self.state_dim = state_dim
         self.n_categories = n_categories
         self.x_dp = nn.Dropout(x_drop)
@@ -278,7 +279,7 @@ class mixVAE_model(nn.Module):
             s_logvars.append(s_logvar)
             c_probs.append(c_prob)
             
-        return x_recs, [], [], x_lows, th.stack(cs), s_smps, c_smps, s_means, s_logvars, c_probs
+        return x_recs, [], [], x_lows, cs, s_smps, c_smps, s_means, s_logvars, c_probs
 
 
     def state_changes(self, x, d_s, temp, n_samp=100):

@@ -40,7 +40,7 @@ def summarize_inference(cpl_mixVAE, files, data, saving_folder=''):
 
     for i, file in enumerate(files):
         file_name_ind = file.rfind('/')
-        print(f'Model {file[file_name_ind:]}')
+        print(f'model: {file[file_name_ind:]}')
         cpl_mixVAE.load_model(file)
         output_dict = cpl_mixVAE.eval_model(data)
 
@@ -81,7 +81,6 @@ def summarize_inference(cpl_mixVAE, files, data, saving_folder=''):
                 armA_vs_armB_norm = armA_vs_armB_norm[:, nprune_indx][nprune_indx]
                 armA_vs_armB = armA_vs_armB[:, nprune_indx][nprune_indx]
                 diag_term = np.diag(armA_vs_armB_norm)
-                ind_sort = np.argsort(diag_term)
                 consensus_min.append(np.min(diag_term))
                 con_mean = 1. - (sum(np.abs(predicted_label[0, :] - predicted_label[1, :]) > 0.) / predicted_label.shape[1])
                 consensus_mean.append(con_mean)
