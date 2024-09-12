@@ -3,9 +3,15 @@ from copy import deepcopy
 import os
 import numpy as np
 import signal
+from pathlib import Path
+from itertools import starmap
+
+
 import torch as th
-import torch.multiprocessing as mp
-import torch.distributed as dist
+from torch import optim
+from torch import cuda
+from torch import multiprocessing as mp
+from torch import distributed as dist
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -18,7 +24,6 @@ import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
-from pathlib import Path
 from pyrsistent import pmap
 
 from mmidas.nn_model import mixVAE_model
@@ -27,68 +32,78 @@ import wandb
 
 import fsdp_mnist as utils
 
-signal.signal(signal.SIGINT, lambda _, __: dist.destroy_process_group())
+# Args = LocalArgs | DistArgs
+# train = train | wandb_train
 
-def parse_toml_(toml_file: str, sub_file: str, args=None, trained=False):
-    def _make_saving_folders_(saving_folder, existing=0):
-        if not os.path.exists(saving_folder + f'_RUN{existing}'):
-            return saving_folder + f'_RUN{existing}'
+def mapv(f, assocs):
+    return starmap(lambda k, v: (k, f(v)), assocs)
+
+def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
+    def count_existing(saving_folder, acc=0):
+        if not os.path.exists(saving_folder + f'_RUN{acc}'):
+            return acc
         else:
-            return _make_saving_folders_(saving_folder, existing + 1)
+            return count_existing(saving_folder, acc + 1)
+        
+    def mk_saving_folder(saving_folder, run):
+        return saving_folder + f'_RUN{run}'
     
     config = get_paths(toml_file=toml_file, sub_file=sub_file)
     data_file = Path(config[sub_file]['data_path']) / Path(config[sub_file]['anndata_file'])
     folder_name = f'K{args.n_categories}_S{args.state_dim}_AUG{args.augmentation}_LR{args.lr}_A{args.n_arm}_B{args.batch_size}' + \
                     f'_E{args.n_epoch}_Ep{args.n_epoch_p}'
     saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name
-    return pmap(map(lambda kv: (kv[0], str(kv[1])), {
+    return pmap(mapv(str, {
         'data': data_file,
-        'saving': _make_saving_folders_(str(saving_folder)),
+        'saving': mk_saving_folder(saving_folder, count_existing(saving_folder)),
         'aug': config['paths']['main_dir'] / config[sub_file]['aug_model'],
         'trained': config['paths']['main_dir'] / config[sub_file]['trained_model'] if trained else ''
     }.items()))
     
 
-def update_args(args, **kw):
-    cpy = deepcopy(args)
-    for k, v in kw.items():
-        setattr(cpy, k, v)
-    return cpy
+def set_seeds(s: int) -> None:
+    if cuda.is_available():
+        _set_seeds_cuda(s)
+    else:
+        _set_seeds(s)
 
-# Main function
+def _set_seeds(s: int):
+    th.manual_seed(s)
+    np.random.seed(s)
+    random.seed(s)
+    os.environ['PYTHONHASHSEED'] = str(s)
+
+def _set_seeds_cuda(s: int):
+    cuda.manual_seed(s)
+    _set_seeds(s)
+
 def main(r, ws, args):
+    SEED = 546
+
     if ws > 1:
-        utils.set_prn_(r)
-        utils.su_dist_(r, ws, args.addr, args.port)
+        utils.set_print(r) # prepend "[rank: r]" to print statements
+        utils.init_dist(r, ws, args.addr, args.port)
         th.cuda.set_device(r)
 
-    seed = 546
-    th.manual_seed(seed)
-    if th.cuda.is_available():
-        th.cuda.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
+    set_seeds(SEED)
 
     # Load configuration paths
-    cfg = parse_toml_('pyproject.toml', 'mouse_smartseq', args, trained=False)
-    print(f' -- making folders: {cfg.saving} -- ')
-    os.makedirs(cfg.saving, exist_ok=True)
-    os.makedirs(cfg.saving + '/model', exist_ok=True)
+    files = parse_toml('pyproject.toml', 'mouse_smartseq', args, trained=False)
+    print(f' -- making folders: {files.saving} -- ')
+    os.makedirs(files.saving, exist_ok=True)
+    os.makedirs(files.saving + '/model', exist_ok=True)
 
     # Load data
-    data = load_data(datafile=cfg.data)
+    data = load_data(datafile=files.data)
     print(f"# cells: {data['log1p'].shape[0]}, # genes: {data['log1p'].shape[1]}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
-    cplMixVAE = cpl_mixVAE(saving_folder=cfg.saving,
-                                 device=r,
-                                 aug_file=cfg.aug)
+    cplMixVAE = cpl_mixVAE(files.saving, files.aug, r)
 
     # Make data loaders for training, validation, and testing
     fold = 0 # fold index for cross-validation, for reproducibility purpose
-    train_loader, test_loader, alldata_loader = get_loaders(dataset=data['log1p'],
-                                                            seed = seed,
+    train_loader, test_loader, _ = get_loaders(dataset=data['log1p'],
+                                                            seed = SEED,
                                                             batch_size=args.batch_size,
                                                             world_size=ws,
                                                             rank=r,
@@ -99,7 +114,7 @@ def main(r, ws, args):
                          state_dim=args.state_dim,
                          input_dim=data['log1p'].shape[1],
                          fc_dim=args.fc_dim,
-                         lowD_dim=args.latent_dim, # <-- good programming
+                         lowD_dim=args.latent_dim,
                          x_drop=args.p_drop,
                          s_drop=args.s_drop,
                          lr=args.lr,
@@ -110,19 +125,19 @@ def main(r, ws, args):
                          lam=args.lam,
                          lam_pc=args.lam_pc,
                          beta=args.beta,
-                         ref_prior=args.ref_pc, # <-- good programming
+                         ref_prior=args.ref_pc,
                          variational=args.variational,
-                         trained_model=cfg.trained,
+                         trained_model=files.trained,
                          n_pr=args.n_pr,
-                         mode=args.loss_mode) # <-- good programming
+                         mode=args.loss_mode)
 
     # Train and save the model
     run = wandb.init(project='mmidas-experiments', config=vars(args)) if args.use_wandb else None
-    cplMixVAE.model = (FSDP(cplMixVAE.model, auto_wrap_policy=utils.make_wrap_policy(20000)) 
-                       if ws > 1 else cplMixVAE.model)
-    cplMixVAE.optimizer = th.optim.Adam(cplMixVAE.model.parameters(), lr=args.lr)
+    if ws > 1:
+        cplMixVAE.model = FSDP(cplMixVAE.model, auto_wrap_policy=utils.make_wrap_policy(20000))
+    cplMixVAE.optimizer = optim.Adam(cplMixVAE.model.parameters(), lr=args.lr)
 
-    model_file = cplMixVAE.train(train_loader=train_loader,
+    cplMixVAE.train(train_loader=train_loader,
                                  test_loader=test_loader,
                                  n_epoch=args.n_epoch,
                                  n_epoch_p=args.n_epoch_p,
@@ -134,6 +149,14 @@ def main(r, ws, args):
 
     if ws > 1:
         dist.destroy_process_group()
+
+# TODO
+def dist_main(args):
+    raise NotImplementedError
+
+# TODO
+def parse_args():
+    raise NotImplementedError
 
 # Run the main function when the script is executed
 if __name__ == "__main__":
@@ -170,26 +193,33 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default='mouse_smartseq', type=str, help="dataset name, e.g., 'mouse_smartseq', 'mouse_ctx_10x'")
     parser.add_argument("--device", default='cuda', type=str, help="computing device, either 'cpu' or 'cuda'.")
     parser.add_argument("--use-wandb", default=False, action='store_true', help="use wandb for logging")
-    parser.add_argument('--gpus', type=int, default=-1)
+    parser.add_argument('--gpus', type=int, default=None)
     parser.add_argument('--use_orig_params', default=False, action='store_true')
-    parser.add_argument('--num_workers', type=int, default=-1)
+    parser.add_argument('--num_workers', type=int, default=None)
     parser.add_argument('--use_dist_sampler', default=False, action='store_true')
-    parser.add_argument('--prefetch_factor', type=int, default=-1)
-    args = utils.make_args(parser)
+    parser.add_argument('--prefetch_factor', type=int, default=None)
+    args = parser.parse_args()
     
-    ws = utils.ct_gpu_args(args)
-    print(f'ws: {ws}')
+    ws = args.gpus # world size
+    if ws is None:
+        ws = cuda.device_count()
+    num_workers = args.num_workers
+    if num_workers is None:
+        num_workers = utils.compute_workers()
+    
+    print(f'world size: {ws}')
+    args.num_workers = num_workers
     if ws > 1:
-        addr = utils.get_free_addr()
-        args = update_args(args, addr=addr, 
-                           port=utils.get_free_port(addr), 
-                           num_workers=utils.count_num_workers(args),
-                           gpus=ws, prefetch_factor=utils.get_prefetch_factor(args))
+        addr = utils.find_addr()
+        port = utils.find_port(addr)
+        prefetch_factor = args.prefetch_factor
+        if prefetch_factor is None:
+            prefetch_factor = utils.get_prefetch_factor()
+
+        args.addr = addr
+        args.port = port
+        args.prefetch_factor = prefetch_factor
         print(args)
         mp.spawn(main, args=(ws, args), nprocs=ws, join=True)
     else:
         main(args.device, 1, args)
-
-# TODO:
-    # [] fix th.compile for mps
-    # [] check reparam_trick()

@@ -1,7 +1,7 @@
 # Based on: https://github.com/pytorch/examples/blob/master/mnist/main.py
 import argparse
 import builtins
-import datetime
+from datetime import timedelta
 from functools import partial, reduce
 import signal
 import socket
@@ -60,19 +60,16 @@ def set_mode_(model, mode):
 def show_gpu():
   print(f"cuda device: {torch.cuda.current_device()}")
 
-def ct_gpu():
-  return torch.cuda.device_count()
-
-def set_prn_(r):
+def set_print(r):
   builtins.print = partial(print, f"[r{r}]")
 
 def ct_dir(pth):
   return sum(os.path.isdir(os.path.join(pth, x)) for x in os.listdir(pth))
 
-def get_free_addr():
+def find_addr():
   return socket.gethostbyname_ex(socket.gethostname())[2][0]
     
-def get_free_port(addr):
+def find_port(addr):
   with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind((addr, 0))
     s.listen(1)
@@ -80,7 +77,7 @@ def get_free_port(addr):
   return port
 
 # TODO: determine master_addr and master_port automatically
-def su_env_(a, p):
+def init_flags(a, p):
     # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ['MASTER_ADDR'] = str(a)
     os.environ['MASTER_PORT'] = str(p)
@@ -93,20 +90,18 @@ def su_env_(a, p):
       torch.backends.cudnn.allow_tf32 = True
       torch.set_float32_matmul_precision('high')
       # torch.backends.cudnn.benchmark = True
+    signal.signal(signal.SIGINT, lambda _, __: dist.destroy_process_group())
 
 
-def mk_to(s):
-  return datetime.timedelta(seconds=s)
-
-def su_pg_(r, ws):
+def init_pg(r, ws):
    dist.init_process_group('nccl', rank=r, world_size=ws, 
-                           timeout=mk_to(600))
+                           timeout=timedelta(seconds=300))
 
-def su_dist_(r, ws, a=None, p=None):
-  su_env_(a, p)
-  su_pg_(r, ws)
+def init_dist(r, ws, a=None, p=None):
+  init_flags(a, p)
+  init_pg(r, ws)
 
-def cu_dist_():
+def destroy_dist():
   dist.destroy_process_group()
 
 def is_sum(op):
@@ -173,7 +168,7 @@ def make_cuda_event():
 def ddp(*args, **kw):
   return DDP(*args, **kw)
 
-signal.signal(signal.SIGINT, lambda _, __: cu_dist_())
+signal.signal(signal.SIGINT, lambda _, __: destroy_dist())
 
 class Net(nn.Module):
   def __init__(self, use_batchnorm=False):
@@ -500,6 +495,15 @@ def count_cpus_():
     return len(os.sched_getaffinity(0))
   else:
     return os.cpu_count()
+  
+def len_cpus() -> int:
+  if hasattr(os, 'sched_getaffinity'):
+    return len(os.sched_getaffinity(0))
+  else:
+    return os.cpu_count()
+  
+def compute_workers():
+  return len_cpus() // 2
 
 def count_num_workers(args):
   if args.num_workers == -1:
@@ -507,19 +511,13 @@ def count_num_workers(args):
   else:
     return args.num_workers
   
-def get_prefetch_factor(args):
-  if args.prefetch_factor == -1:
-    if count_num_workers(args) == 0:
-      return None
-    else:
-      return 2
-  else:
-    return args.prefetch_factor
+def get_prefetch_factor():
+  return 2
 
 def main(r, ws, args):
-    set_prn_(r)
+    set_print(r)
     print(f"starting...")
-    su_dist_(r, ws, args.addr, args.port)
+    init_dist(r, ws, args.addr, args.port)
     # if is_master(r):
     #     print("warning: changing matmul precision")
 
@@ -644,10 +642,7 @@ def main(r, ws, args):
         barrier_()
         save_model_(model, r)
 
-    cu_dist_()
-
-def make_args(parser):
-  return parser.parse_args()
+    destroy_dist()
 
 def ct_gpu_args(args):
   if args.gpus == -1:
@@ -705,16 +700,16 @@ if __name__ == '__main__':
     parser.add_argument('--use_batchnorm', default=False, action='store_true')
     parser.add_argument('--use_dist_sampler', default=False, action='store_true')
     parser.add_argument('--wandb', default=False, action='store_true')
-    args = make_args(parser)
+    args = parser.parse_args()
     set_seed_(args.seed)
 
     ws = ct_gpu_args(args)
     print(f'ws: {ws}')
-    args.addr = get_free_addr()
-    args.port = get_free_port(args.addr)
+    args.addr = find_addr()
+    args.port = find_port(args.addr)
     args.num_workers = count_num_workers(args)
     args.gpus = ws
-    args.prefetch_factor = get_prefetch_factor(args)
+    args.prefetch_factor = get_prefetch_factor()
     print(args)
     mp.spawn(main, args=(ws, args), nprocs=ws, join=True)
 

@@ -1,48 +1,10 @@
-# -----------------------------------------------------------------------------
 [project]
-name = "mmidas"
-description = "Couple Mixture VAE models for single cell data"
+name = "distributed-vae"
 version = "0.1.0"
-requires-python = ">= 3.8"
-#requires-pytorch = ">= 2.0"
-
-authors = [
-  {name = "Yeganeh Marghi", email = "yeganeh.marghi@alleninstitute.org"},
-  {name = "Rohan Gala", email = "rohang@alleninstitute.org"}
-]
-
+description = "Add your description here"
 readme = "README.md"
-
-# -----------------------------------------------------------------------------
-[paths]
-main_dir = "."
-
-# -----------------------------------------------------------------------------
-[mouse_smartseq]
-anndata_file = "Mouse_ALM-VISp_cpm.h5ad"
-htree_file = "tree_Mouse_ALM-VISp_2018.csv"
-ref_gene_file = "genes_SS_ALM-VISp.csv"
-data_path = "data/"
-saving_path = "mmidas-results/"
-aug_model = "smartseq_augmenter/trained_augmenter_bs_1000_dn_50_dz_10_l1_1.0_l2_0.5_l3_0.1_l4_0.50"
-trained_model = "K92_S2_AUGTrue_LR0.001_A3_B5000_E100000_Ep0_RUN0"
-
-# -----------------------------------------------------------------------------
-[mouse_ctx_10x]
-anndata_file = ""
-htree_file = "tree_Mouse_cortex_2020.csv"
-data_path = "data/mouse_ctx_10x/"
-saving_path = "results/mouse_ctx_10x/"
-aug_model = ""
-trained_model = ""
-
-# -----------------------------------------------------------------------------
-[SEA-AD]
-anndata_file = ""
-htree_file = "tree_human_MTG_2023.csv"
-data_path = "data/human_AD/"
-saving_path = "results/human_AD/"
-aug_model = ""
-trained_model = ""
-
-
+requires-python = ">=3.12"
+dependencies = [
+    "expecttest>=0.2.1",
+    "pytest>=8.3.3",
+]

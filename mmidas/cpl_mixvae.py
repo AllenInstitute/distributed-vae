@@ -52,6 +52,8 @@ class Worker:
 
 Rank = Master | Worker
 
+# Loss = LocalLoss | DistLoss
+
 def mk_rank(i: int | Literal['mps', 'cpu', 'cuda']) -> Rank:
     match i:
         case 0 | 'mps' | 'cpu' | 'cuda':
@@ -345,6 +347,9 @@ class cpl_mixVAE:
         return
             data_file_id: the output dictionary.
         """
+        if rank is None:
+            rank = self.device
+
         A = self.n_arm
         C = self.n_categories
         E = n_epoch
@@ -383,7 +388,7 @@ class cpl_mixVAE:
 
         if self.init:
             print('training started')
-            epoch_time = []
+            epoch_times = []
             for e in trange(E):
                 loss = th.zeros(2, device=rank)
                 loss_joint = th.zeros(1, device=rank)
@@ -402,7 +407,10 @@ class cpl_mixVAE:
                     tt = time.time() 
                 
                     with th.no_grad():
-                        xs = self.netA(x.expand(A, -1, -1), True, 0.1)[1] if self.aug_file else x.expand(A, -1, -1)
+                        if self.aug_file:
+                            xs = self.netA(x.expand(A, -1, -1), True, 0.1)[1]
+                        else:
+                            xs = x.expand(A, -1, -1)
 
                     if self.ref_prior:
                         c_bin = th.tensor(c_onehot[n, :], dtype=th.float, device=rank)
@@ -436,14 +444,14 @@ class cpl_mixVAE:
                 losses.append(loss[0].item() / loss[1].item())
                 loss_joints.append(loss_joint.item() / Bs)
                 c_ents.append(c_ent.item() / Bs)
-                c_l2_dists.append(c_l2_dist.item() / loss[1].item())
-                c_dists.append(c_dist.item() / Bs)
+                c_l2_dists.append(c_l2_dist.item() / Bs)
+                c_dists.append(c_dist.item() / loss[1].item())
 
                 for a in range(A):
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
                 _time = time.time() - t0
-                print(f"E{e} | loss {losses[-1]} | rec {loss_recs[0][-1]} | joint {loss_joints[-1]} | entropy {c_ents[-1]} | distance {c_dists[-1]} | time {_time} | mem {mem}")
+                print(f"E{e} | loss {losses[-1]} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ", end="")
                 
                 if run:
                     run.log({
@@ -483,7 +491,7 @@ class cpl_mixVAE:
                     else:
                         batch_indx = 0
                         x, n = test_loader.dataset.tensors
-                        x = x.to(self.device)
+                        x = x.to(rank)
                         n = n.to(int)
 
                         xs = [x for _ in range(A)]
@@ -501,14 +509,14 @@ class cpl_mixVAE:
                         loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(x_recs, p_x, r_x,
                                                                                        xs, s_means, s_logvars, cs,
                                                                                        c_smps, c_bin)
-                        val_loss = loss.data.item()
+                        val_loss = loss.item()
                         for a in range(A):
-                            val_loss_rec += loss_rec[a].data.item() / D
+                            val_loss_rec += loss_rec[a].item() / D
                         
 
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
-                print(f" val-loss {validation_loss[e]} | rec-loss {validation_rec_loss[e]}")
+                print(f"val-loss {validation_loss[e]:.2f} | rec-loss {validation_rec_loss[e]:.2f}")
                 if run:
                     run.log({
                         'val/total-loss': validation_loss[e],
@@ -517,7 +525,9 @@ class cpl_mixVAE:
 
                 if self.save and (e > 0) and (e % 10000 == 0):
                     trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{e}.pth'
+                    print(f"saving model to: {trained_model}")
                     th.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+
 
                     
                     predicted_label = np.zeros((A, len(cs_train[0] * B)))
@@ -558,9 +568,9 @@ class cpl_mixVAE:
                             plt.savefig(self.folder + '/consensus_arm_' + str(a) + '_arm_' + str(a) + '_epoch_' + str(e) + '.png', dpi=600)
                             plt.close("all")
 
-                epoch_time.append(time.time() - t0)
+                epoch_times.append(time.time() - t0)
 
-            print('epoch time:', np.mean(epoch_time))
+            print('epoch time:', np.mean(epoch_times))
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
                 ax.plot(range(n_epoch), loss_data, label=label)
@@ -715,12 +725,12 @@ class cpl_mixVAE:
                 train_recon = np.zeros((self.n_arm, n_epoch_p))
                 train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch_p))
 
-                for arm in range(self.n_arm):
-                    prune.custom_from_mask(self.model.fcc[arm], 'weight', mask=weight_mask)
-                    prune.custom_from_mask(self.model.fcc[arm], 'bias', mask=bias_mask)
-                    prune.custom_from_mask(self.model.fc_mu[arm], 'weight', mask=fc_mu)
-                    prune.custom_from_mask(self.model.fc_sigma[arm], 'weight', mask=fc_sigma)
-                    prune.custom_from_mask(self.model.fc6[arm], 'weight', mask=f6_mask)
+                for a in range(A):
+                    prune.custom_from_mask(self.model.fcc[a], 'weight', mask=weight_mask)
+                    prune.custom_from_mask(self.model.fcc[a], 'bias', mask=bias_mask)
+                    prune.custom_from_mask(self.model.fc_mu[a], 'weight', mask=fc_mu)
+                    prune.custom_from_mask(self.model.fc_sigma[a], 'weight', mask=fc_sigma)
+                    prune.custom_from_mask(self.model.fc6[a], 'weight', mask=f6_mask)
 
                 for epoch in trange(n_epoch_p):
                     # training
@@ -748,7 +758,7 @@ class cpl_mixVAE:
                         tt = time.time()
                         w_param, bias_param, activ_param = 0, 0, 0
                         # parallelize
-                        for arm in range(self.n_arm-1):
+                        for arm in range(A-1):
                             if self.aug_file:
                                 noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
                                 _, gen_data = self.netA(data, noise, True, self.device)
@@ -784,10 +794,8 @@ class cpl_mixVAE:
                         entr += entropy
                         var_min += min_var_0.data.item()
 
-                        for arm in range(self.n_arm):
-                            train_loss_rec[arm] += loss_rec[arm].data.item() / self.input_dim
-
-                    
+                        for a in range(A):
+                            train_loss_rec[a] += loss_rec[a].item() / D
 
                     train_loss[epoch] = train_loss_val / (batch_indx + 1)
                     train_loss_joint[epoch] = train_jointloss_val / (batch_indx + 1)
@@ -796,10 +804,10 @@ class cpl_mixVAE:
                     train_log_distance[epoch] = log_dqz / (batch_indx + 1)
                     train_minVar[epoch] = var_min / (batch_indx + 1)
 
-                    for arm in range(self.n_arm):
-                        train_recon[arm, epoch] = train_loss_rec[arm] / (batch_indx + 1)
-                        for c in range(self.n_categories):
-                            train_loss_KL[arm, c, epoch] = train_KLD_cont[arm, c] / (batch_indx + 1)
+                    for a in range(A):
+                        train_recon[a, epoch] = train_loss_rec[a] / (batch_indx + 1)
+                        for c in range(C):
+                            train_loss_KL[a, c, epoch] = train_KLD_cont[a, c] / (batch_indx + 1)
 
                     print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'
                           ':.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
@@ -855,11 +863,11 @@ class cpl_mixVAE:
                             loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
                                                                                         mu, log_var, qc, c, c_bin)
                             val_loss = loss.data.item()
-                            for arm in range(self.n_arm):
-                                val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                            for a in range(A):
+                                val_loss_rec += loss_rec[a].data.item() / D
                             
 
-                    validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / self.n_arm
+                    validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / A
                     total_val_loss[epoch] = val_loss / (batch_indx + 1)
                     print('====> Validation Total Loss: {:.4}, Rec. Loss: {:.4f}'.format(total_val_loss[epoch], validation_rec_loss[epoch]))
 

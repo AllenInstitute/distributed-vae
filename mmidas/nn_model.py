@@ -118,7 +118,7 @@ class mixVAE_model(nn.Module):
             ref_prior: a boolean variable, True uses the reference prior for the categorical variable.
             loss_mode: string, define the reconstruction loss function, either MSE or ZINB.
         """
-        super(mixVAE_model, self).__init__()
+        super().__init__()
         self.input_dim = input_dim
         self.fc_dim = fc_dim
         self.lowD_dim = lowD_dim
@@ -445,8 +445,6 @@ class mixVAE_model(nn.Module):
         # TODO: this loop is really easy to parallelize/refactor with attention
         # q, k, v = ((c, logc, inv_var_c), (c, logc, inv_var_c), (c, logc, inv_var_c)). maybe add kernels too?
         for a, (x, x_rec, s_mean, s_logvar, c_a, c_smp_a) in enumerate(zip(xs, x_recs, s_means, s_logvars, _c, c_smps)): # a ∈ 0..A-1
-            assert x.size(0) == B
-
             ll = F.mse_loss(x_rec, x, reduction='mean') + B * np.log(2 * np.pi)
             if self.loss_mode == 'MSE':
                 loss_rec = (0.5 * F.mse_loss(x_rec, x, reduction='sum') / B) + (0.5 * F.binary_cross_entropy(binarize(x_rec, 0.1), binarize(x, 0.1)))
@@ -485,7 +483,7 @@ class mixVAE_model(nn.Module):
         sum_c_ents = sum(c_ents)
         loss_joints = self.lam * sum_c_dists + sum_c_ents + arm_combs(A) * ((C / 2) * (np.log(2 * np.pi)) - 0.5 * np.log(2 * self.lam))
         losses = max((A - 1), 1) * sum(loss_inds) + loss_joints
-        return losses, th.tensor(loss_recs), loss_joints, sum_c_ents / len(c_ents),  sum_c_dists / len(c_dists), avg(c_l2_dists), kl_ss, [], lls
+        return losses, th.tensor(loss_recs, device=self.device), loss_joints, sum_c_ents / len(c_ents),  sum_c_dists / len(c_dists), avg(c_l2_dists), kl_ss, [], lls
 
 
 def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
