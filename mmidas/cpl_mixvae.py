@@ -591,6 +591,7 @@ class cpl_mixVAE:
                 save_loss_plot(validation_loss, 'Validation', 'validation_loss_curve')
                 
                 trained_model = self.folder + f'/model/cpl_mixVAE_model_before_pruning_A{A}_' + self.current_time + '.pth'
+                print(f"saving model to: {trained_model}")
                 th.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
                 bias = self.model.fcc[0].bias.detach().cpu().numpy()
                 mask = range(len(bias))

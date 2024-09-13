@@ -52,7 +52,7 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     data_file = Path(config[sub_file]['data_path']) / Path(config[sub_file]['anndata_file'])
     folder_name = f'K{args.n_categories}_S{args.state_dim}_AUG{args.augmentation}_LR{args.lr}_A{args.n_arm}_B{args.batch_size}' + \
                     f'_E{args.n_epoch}_Ep{args.n_epoch_p}'
-    saving_folder = config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name
+    saving_folder = str(config['paths']['main_dir'] / config[sub_file]['saving_path'] / folder_name)
     return pmap(mapv(str, {
         'data': data_file,
         'saving': mk_saving_folder(saving_folder, count_existing(saving_folder)),
@@ -85,10 +85,8 @@ def main(r, ws, args):
         utils.init_dist(r, ws, args.addr, args.port)
         th.cuda.set_device(r)
 
-    set_seeds(SEED)
-
     # Load configuration paths
-    files = parse_toml('pyproject.toml', 'mouse_smartseq', args, trained=False)
+    files = parse_toml('pyproject2.toml', 'mouse_smartseq', args, trained=False)
     print(f' -- making folders: {files.saving} -- ')
     os.makedirs(files.saving, exist_ok=True)
     os.makedirs(files.saving + '/model', exist_ok=True)
