@@ -459,6 +459,7 @@ class cpl_mixVAE:
                         'train/joint-loss': loss_joints[-1],
                         'train/negative-joint-entropy': c_ents[-1],
                         'train/simplex-distance': c_dists[-1],
+                        'train/l2-distance': c_l2_dists[-1],
                         'train/time': _time,
                         'train/mem': mem,
                         **dict(map(lambda a: (f'train/rec-loss{a}', loss_recs[a][-1]), range(A))),
