@@ -35,45 +35,54 @@ from .nn_model import mixVAE_model, VAEConfig
 from .utils.data_tools import split_data_Kfold
 from .utils.dataloader import get_sampler, is_dist_sampler
 
-Device = Literal['cpu', 'cuda', 'mps'] | int
+Device = Literal["cpu", "cuda", "mps"] | int
 
 # TODO
+
 
 def bytes_to_mb(x):
     return x / 1e6
 
+
 @dataclass
 class Master:
-    rank: Literal[0, 'mps', 'cpu', 'cuda']
+    rank: Literal[0, "mps", "cpu", "cuda"]
+
 
 @dataclass
 class Worker:
     rank: int
 
+
 Rank = Master | Worker
 
 # Loss = LocalLoss | DistLoss
 
-def mk_rank(i: int | Literal['mps', 'cpu', 'cuda']) -> Rank:
+
+def mk_rank(i: int | Literal["mps", "cpu", "cuda"]) -> Rank:
     match i:
-        case 0 | 'mps' | 'cpu' | 'cuda':
+        case 0 | "mps" | "cpu" | "cuda":
             return Master(i)
         case int(j):
             return Worker(j)
         case _:
             assert_never(i)
 
+
 def is_master(rank):
-    return rank == 0 or rank == 'mps' or rank == 'cpu' or isinstance(rank, Master)
+    return rank == 0 or rank == "mps" or rank == "cpu" or isinstance(rank, Master)
+
 
 def compose2(f, g):
     return lambda *a, **kw: f(g(*a, **kw))
 
+
 def compose(*fs):
     return reduce(compose2, fs)
 
+
 def mk_pbar(seq: Sequence, r: Rank, *fs) -> Sequence:
-    return (lambda x: tqdm(x, total=len(x)) if is_master(r) else x)(compose(*fs)(seq)) # type: ignore
+    return (lambda x: tqdm(x, total=len(x)) if is_master(r) else x)(compose(*fs)(seq))  # type: ignore
 
     # _seq: Sequence = compose(*fs)(seq)
     # match r:
@@ -84,81 +93,127 @@ def mk_pbar(seq: Sequence, r: Rank, *fs) -> Sequence:
     #     case _:
     #         assert_never(r)
 
-    # loader = 
+    # loader =
     # if is_master(rank):
     #     return tqdm(loader, total=len(loader), unit_scale=True)
     # else:
     #     return loader
-    
+
+
 def is_parallel(world_size):
     return world_size > 1
-  
-def print_train_loss(epoch, train_loss, train_recon0, train_recon1, train_loss_joint, train_entropy, train_distance, time, rank):
+
+
+def print_train_loss(
+    epoch,
+    train_loss,
+    train_recon0,
+    train_recon1,
+    train_loss_joint,
+    train_entropy,
+    train_distance,
+    time,
+    rank,
+):
     if is_master(rank):
-        print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {:.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
-            epoch, train_loss, train_recon0, train_recon1, train_loss_joint, train_entropy, train_distance, time))
-        
+        print(
+            "====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {:.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}".format(
+                epoch,
+                train_loss,
+                train_recon0,
+                train_recon1,
+                train_loss_joint,
+                train_entropy,
+                train_distance,
+                time,
+            )
+        )
+
+
 def print_val_loss(val_loss, val_loss_rec, rank):
     if is_master(rank):
-        print('====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}'.format(val_loss, val_loss_rec))
-  
+        print(
+            "====> Validation Total Loss: {:.4f}, Rec. Loss: {:.4f}".format(
+                val_loss, val_loss_rec
+            )
+        )
+
+
 def avg_recon_loss(l: np.ndarray) -> float:
     return np.mean(l, axis=0)
+
 
 def unwrap[T](x: Optional[T]) -> T:
     if x is None:
         raise ValueError("error: expected non-None value")
     return x
 
+
 def len_cpus(deterministic=False) -> int:
     if deterministic:
         return 1
-    elif hasattr(os, 'sched_getaffinity'):
+    elif hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0))
     else:
         return unwrap(os.cpu_count())
-    
+
+
 def get_device(device: Optional[Device] = None) -> th.device:
     match device:
-        case 'cpu' | 'mps' as d:
-            print(f'using {d}')
+        case "cpu" | "mps" as d:
+            print(f"using {d}")
             return th.device(d)
-        case 'cuda' as d:
-            print(f'using {d}: {cuda.get_device_name(d)}')
+        case "cuda" as d:
+            print(f"using {d}: {cuda.get_device_name(d)}")
             return th.device(d)
         case int(d):
             cuda.set_device(d)
-            return get_device('cuda')
+            return get_device("cuda")
         case None:
-            print('device not found')
-            return get_device('cpu')
+            print("device not found")
+            return get_device("cpu")
         case _:
             assert_never(device)
 
-def mk_augmenter(pretrained: str, load_weights: bool) -> tuple[Mapping[Any, Any], Mapping[Any, Any], nn.Module]:
-    aug_model = th.load(pretrained, map_location='cpu')
-    aug_param = aug_model['parameters']
+
+def mk_augmenter(
+    pretrained: str, load_weights: bool
+) -> tuple[Mapping[Any, Any], Mapping[Any, Any], nn.Module]:
+    aug_model = th.load(pretrained, map_location="cpu")
+    aug_param = aug_model["parameters"]
     if load_weights:
-        print('loading augmenter weights')
-        netA = Augmenter_smartseq(noise_dim=aug_param['num_n'],
-                                  latent_dim=aug_param['num_z'],
-                                  input_dim=aug_param['n_features'])
-        netA.load_state_dict(aug_model['netA'])
+        print("loading augmenter weights")
+        netA = Augmenter_smartseq(
+            noise_dim=aug_param["num_n"],
+            latent_dim=aug_param["num_z"],
+            input_dim=aug_param["n_features"],
+        )
+        netA.load_state_dict(aug_model["netA"])
         return aug_model, aug_param, netA
     else:
-        print('warning: not loading augmenter weights')
-        netA = Augmenter(noise_dim=aug_param['num_n'],
-                         latent_dim=aug_param['num_z'],
-                         input_dim=aug_param['n_features'])
+        print("warning: not loading augmenter weights")
+        netA = Augmenter(
+            noise_dim=aug_param["num_n"],
+            latent_dim=aug_param["num_z"],
+            input_dim=aug_param["n_features"],
+        )
         return aug_model, aug_param, netA
+
 
 def asnp(x):
     return x.cpu().detach().numpy()
 
-class cpl_mixVAE:
 
-    def __init__(self, saving_folder='', aug_file='', device: Optional[Device] = None, eps=1e-8, 
-                 save_flag=True, load_weights=True):
+class cpl_mixVAE:
+    def __init__(
+        self,
+        saving_folder="",
+        aug_file="",
+        device: Optional[Device] = None,
+        eps=1e-8,
+        save_flag=True,
+        load_weights=True,
+    ):
         """
         Initialized the cpl_mixVAE class.
 
@@ -185,9 +240,20 @@ class cpl_mixVAE:
         else:
             self.aug_model, self.aug_param, self.netA = None, None, None
 
-    def get_dataloader(self, dataset, label, batch_size=128, n_aug_smp=0, k_fold=10, fold=0, rank=-1, world_size=-1, use_dist_sampler=False, deterministic=False):
+    def get_dataloader(
+        self,
+        dataset,
+        label,
+        batch_size=128,
+        n_aug_smp=0,
+        k_fold=10,
+        fold=0,
+        rank=-1,
+        world_size=-1,
+        use_dist_sampler=False,
+        deterministic=False,
+    ):
         self.batch_size = batch_size
-
 
         train_inds, test_inds = split_data_Kfold(label, k_fold)
         train_ind = train_inds[fold].astype(int)
@@ -200,9 +266,15 @@ class cpl_mixVAE:
             train_set_ind = train_ind_torch.clone()
             for n_a in range(n_aug_smp):
                 if self.aug_file:
-                    noise = torch.randn(train_set_torch.shape[0], self.aug_param['num_n'])
+                    noise = torch.randn(
+                        train_set_torch.shape[0], self.aug_param["num_n"]
+                    )
                     if self.gpu:
-                        _, gen_data = self.netA(train_set_torch.cuda(self.device), noise.cuda(self.device), self.device)
+                        _, gen_data = self.netA(
+                            train_set_torch.cuda(self.device),
+                            noise.cuda(self.device),
+                            self.device,
+                        )
                     else:
                         _, gen_data = self.netA(train_set_torch, noise, self.device)
 
@@ -217,45 +289,104 @@ class cpl_mixVAE:
             train_data = TensorDataset(train_set_torch, train_ind_torch)
 
         if world_size > 1 and use_dist_sampler:
-            train_sampler = DistributedSampler(train_data, rank=rank, num_replicas=world_size, shuffle=True)
-            train_loader = DataLoader(train_data, batch_size=batch_size, 
-                                      drop_last=True, pin_memory=True, 
-                                      persistent_workers=True, num_workers=len_cpus(deterministic),
-                                      sampler=train_sampler)
+            train_sampler = DistributedSampler(
+                train_data, rank=rank, num_replicas=world_size, shuffle=True
+            )
+            train_loader = DataLoader(
+                train_data,
+                batch_size=batch_size,
+                drop_last=True,
+                pin_memory=True,
+                persistent_workers=True,
+                num_workers=len_cpus(deterministic),
+                sampler=train_sampler,
+            )
         else:
-            train_loader = DataLoader(train_data, batch_size=batch_size, 
-                                      drop_last=True, pin_memory=True, persistent_workers=True,
-                                      num_workers=len_cpus(deterministic))
+            train_loader = DataLoader(
+                train_data,
+                batch_size=batch_size,
+                drop_last=True,
+                pin_memory=True,
+                persistent_workers=True,
+                num_workers=len_cpus(deterministic),
+            )
 
         val_set_torch = torch.FloatTensor(dataset[test_ind, :])
         val_ind_torch = torch.FloatTensor(test_ind)
         validation_data = TensorDataset(val_set_torch, val_ind_torch)
-        validation_loader = DataLoader(validation_data, batch_size=batch_size, shuffle=True, drop_last=False, pin_memory=True)
+        validation_loader = DataLoader(
+            validation_data,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=False,
+            pin_memory=True,
+        )
 
         test_set_torch = torch.FloatTensor(dataset[test_ind, :])
         test_ind_torch = torch.FloatTensor(test_ind)
         test_data = TensorDataset(test_set_torch, test_ind_torch)
 
         if world_size > 1 and use_dist_sampler:
-            print('using distributed sampler...')
-            test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=False, pin_memory=True, persistent_workers=True, num_workers=len_cpus(deterministic),
-                                    sampler=test_sampler)
+            print("using distributed sampler...")
+            test_sampler = DistributedSampler(
+                test_data, num_replicas=world_size, rank=rank, shuffle=True
+            )
+            test_loader = DataLoader(
+                test_data,
+                batch_size=1,
+                drop_last=False,
+                pin_memory=True,
+                persistent_workers=True,
+                num_workers=len_cpus(deterministic),
+                sampler=test_sampler,
+            )
         else:
-            test_loader = DataLoader(test_data, batch_size=1, drop_last=True,
-                                     pin_memory=True, persistent_workers=True,
-                                     num_workers=len_cpus(deterministic))
+            test_loader = DataLoader(
+                test_data,
+                batch_size=1,
+                drop_last=True,
+                pin_memory=True,
+                persistent_workers=True,
+                num_workers=len_cpus(deterministic),
+            )
 
         data_set_troch = torch.FloatTensor(dataset)
         all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
         all_data = TensorDataset(data_set_troch, all_ind_torch)
-        alldata_loader = DataLoader(all_data, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True)
+        alldata_loader = DataLoader(
+            all_data,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            pin_memory=True,
+        )
 
         return alldata_loader, train_loader, validation_loader, test_loader
 
-    def init_model(self, n_categories, state_dim, input_dim, fc_dim=100, lowD_dim=10, x_drop=0.5, s_drop=0.2, lr=.001,
-                   lam=1, lam_pc=1, n_arm=2, temp=1., tau=0.005, beta=1., hard=False, variational=True, ref_prior=False,
-                   trained_model='', n_pr=0, momentum=.01, mode='MSE'):
+    def init_model(
+        self,
+        n_categories,
+        state_dim,
+        input_dim,
+        fc_dim=100,
+        lowD_dim=10,
+        x_drop=0.5,
+        s_drop=0.2,
+        lr=0.001,
+        lam=1,
+        lam_pc=1,
+        n_arm=2,
+        temp=1.0,
+        tau=0.005,
+        beta=1.0,
+        hard=False,
+        variational=True,
+        ref_prior=False,
+        trained_model="",
+        n_pr=0,
+        momentum=0.01,
+        mode="MSE",
+    ):
         """
         Initialized the deep mixture model and its optimizer.
 
@@ -290,20 +421,37 @@ class cpl_mixVAE:
         self.n_arm = n_arm
         self.fc_dim = fc_dim
         self.ref_prior = ref_prior
-        self.model = mixVAE_model(input_dim=self.input_dim, fc_dim=fc_dim, n_categories=self.n_categories, state_dim=self.state_dim,
-                                lowD_dim=lowD_dim, x_drop=x_drop, s_drop=s_drop, n_arm=self.n_arm, lam=lam, lam_pc=lam_pc,
-                                tau=tau, beta=beta, hard=hard, variational=variational, device=self.device, eps=self.eps,
-                                ref_prior=ref_prior, momentum=momentum, loss_mode=mode)
-        
+        self.model = mixVAE_model(
+            input_dim=self.input_dim,
+            fc_dim=fc_dim,
+            n_categories=self.n_categories,
+            state_dim=self.state_dim,
+            lowD_dim=lowD_dim,
+            x_drop=x_drop,
+            s_drop=s_drop,
+            n_arm=self.n_arm,
+            lam=lam,
+            lam_pc=lam_pc,
+            tau=tau,
+            beta=beta,
+            hard=hard,
+            variational=variational,
+            device=self.device,
+            eps=self.eps,
+            ref_prior=ref_prior,
+            momentum=momentum,
+            loss_mode=mode,
+        )
+
         self.model = self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
         if len(trained_model) > 0:
-            print('Load the pre-trained model')
+            print("Load the pre-trained model")
             # if you wish to load another model for evaluation
-            loaded_file = torch.load(trained_model, map_location='cpu')
-            self.model.load_state_dict(loaded_file['model_state_dict'])
-            self.optimizer.load_state_dict(loaded_file['optimizer_state_dict'])
+            loaded_file = torch.load(trained_model, map_location="cpu")
+            self.model.load_state_dict(loaded_file["model_state_dict"])
+            self.optimizer.load_state_dict(loaded_file["optimizer_state_dict"])
             self.init = False
             self.n_pr = n_pr
         else:
@@ -311,24 +459,54 @@ class cpl_mixVAE:
             self.n_pr = 0
 
     def append(self, c: VAEConfig):
-        model = mixVAE_model(input_dim=c.input_dim, fc_dim=c.fc_dim, n_categories=c.n_categories, state_dim=c.state_dim,
-                                lowD_dim=c.lowD_dim, x_drop=c.x_drop, s_drop=c.s_drop, n_arm=c.n_arm, lam=c.lam, lam_pc=c.lam_pc,
-                                tau=c.tau, beta=c.beta, hard=c.hard, variational=c.variational, device=self.device, eps=self.eps,
-                                ref_prior=c.ref_prior, momentum=c.momentum, loss_mode=c.mode).to(self.device)
+        model = mixVAE_model(
+            input_dim=c.input_dim,
+            fc_dim=c.fc_dim,
+            n_categories=c.n_categories,
+            state_dim=c.state_dim,
+            lowD_dim=c.lowD_dim,
+            x_drop=c.x_drop,
+            s_drop=c.s_drop,
+            n_arm=c.n_arm,
+            lam=c.lam,
+            lam_pc=c.lam_pc,
+            tau=c.tau,
+            beta=c.beta,
+            hard=c.hard,
+            variational=c.variational,
+            device=self.device,
+            eps=self.eps,
+            ref_prior=c.ref_prior,
+            momentum=c.momentum,
+            loss_mode=c.mode,
+        ).to(self.device)
         optimizer = optim.Adam(model.parameters(), lr=c.lr)
         if c.trained_model:
-            loaded_file = th.load(c.trained_model, map_location='cpu')
-            model.load_state_dict(loaded_file['model_state_dict'])
-            optimizer.load_state_dict(loaded_file['optimizer_state_dict'])
-        self.models.append({'model': model, 'opt': optimizer})
-        
+            loaded_file = th.load(c.trained_model, map_location="cpu")
+            model.load_state_dict(loaded_file["model_state_dict"])
+            optimizer.load_state_dict(loaded_file["optimizer_state_dict"])
+        self.models.append({"model": model, "opt": optimizer})
+
     def load_model(self, trained_model):
-        loaded_file = torch.load(trained_model, map_location='cpu')
-        self.model.load_state_dict(loaded_file['model_state_dict'])
+        loaded_file = torch.load(trained_model, map_location="cpu")
+        self.model.load_state_dict(loaded_file["model_state_dict"])
 
-        self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
+        self.current_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
-    def train(self, train_loader, test_loader, n_epoch, n_epoch_p, c_p=0, c_onehot=0, min_con=.5, max_prun_it=0, rank=None, run=None, ws=1):
+    def train(
+        self,
+        train_loader,
+        test_loader,
+        n_epoch,
+        n_epoch_p,
+        c_p=0,
+        c_onehot=0,
+        min_con=0.5,
+        max_prun_it=0,
+        rank=None,
+        run=None,
+        ws=1,
+    ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
         pcikle used for saving the file
@@ -362,7 +540,7 @@ class cpl_mixVAE:
         S = self.state_dim
         N = len(train_loader.dataset)
 
-        self.current_time = time.strftime('%Y-%m-%d-%H-%M-%S')
+        self.current_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
         losses = []
         loss_joints = []
@@ -370,7 +548,6 @@ class cpl_mixVAE:
         c_ents = []
         c_l2_dists = []
         c_dists = []
-        
 
         validation_loss = np.zeros(E)
         validation_rec_loss = np.zeros(E)
@@ -387,7 +564,7 @@ class cpl_mixVAE:
         f6_mask = f6_mask.to(rank)
 
         if self.init:
-            print('training started')
+            print("training started")
             epoch_times = []
             for e in trange(E):
                 loss = th.zeros(2, device=rank)
@@ -398,14 +575,14 @@ class cpl_mixVAE:
                 c_ent = th.zeros(1, device=rank)
                 t0 = time.time()
                 cs_train = [[] for _ in range(A)]
-                
+
                 self.model.train()
                 for x, n in train_loader:
                     x = x.to(rank)
                     n = n.to(int)
-                        
-                    tt = time.time() 
-                
+
+                    tt = time.time()
+
                     with th.no_grad():
                         if self.aug_file:
                             xs = self.netA(x.expand(A, -1, -1), True, 0.1)[1]
@@ -416,14 +593,35 @@ class cpl_mixVAE:
                         c_bin = th.tensor(c_onehot[n, :], dtype=th.float, device=rank)
                         prior_c = th.tensor(c_p[n, :], dtype=th.float, device=rank)
                     else:
-                        c_bin = 0.
-                        prior_c = 0.
+                        c_bin = 0.0
+                        prior_c = 0.0
 
                     self.optimizer.zero_grad()
-                    x_recs, _, _, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(xs, self.temp, prior_c)
+                    x_recs, _, _, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(
+                        xs, self.temp, prior_c
+                    )
                     for a in range(A):
-                        cs_train[a].append(cs[a].cpu().view(cs[a].size()[0], C).argmax(dim=1).detach().numpy())
-                    _loss, _loss_rec, _loss_joint, _c_ent, _c_dist, _c_l2_dist, _, _, _ = self.model.loss(x_recs, [], [], xs, s_means, s_logvars, cs, c_smps, c_bin)
+                        cs_train[a].append(
+                            cs[a]
+                            .cpu()
+                            .view(cs[a].size()[0], C)
+                            .argmax(dim=1)
+                            .detach()
+                            .numpy()
+                        )
+                    (
+                        _loss,
+                        _loss_rec,
+                        _loss_joint,
+                        _c_ent,
+                        _c_dist,
+                        _c_l2_dist,
+                        _,
+                        _,
+                        _,
+                    ) = self.model.loss(
+                        x_recs, [], [], xs, s_means, s_logvars, cs, c_smps, c_bin
+                    )
                     mem: float = bytes_to_mb(th.cuda.memory_allocated())
                     _loss.backward()
                     self.optimizer.step()
@@ -440,7 +638,7 @@ class cpl_mixVAE:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
                     dist.all_reduce(loss_rec, op=dist.ReduceOp.SUM)
                     dist.all_reduce(c_dist, op=dist.ReduceOp.SUM)
-                    
+
                 losses.append(loss[0].item() / loss[1].item())
                 loss_joints.append(loss_joint.item() / Bs)
                 c_ents.append(c_ent.item() / Bs)
@@ -451,41 +649,83 @@ class cpl_mixVAE:
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
                 _time = time.time() - t0
-                print(f"E{e} | loss {losses[-1]} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ", end="")
-                
+                print(
+                    f"E{e} | loss {losses[-1]} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
+                    end="",
+                )
+
                 if run:
-                    run.log({
-                        'train/total-loss': losses[-1],
-                        'train/joint-loss': loss_joints[-1],
-                        'train/negative-joint-entropy': c_ents[-1],
-                        'train/simplex-distance': c_dists[-1],
-                        'train/l2-distance': c_l2_dists[-1],
-                        'train/time': _time,
-                        'train/mem': mem,
-                        **dict(map(lambda a: (f'train/rec-loss{a}', loss_recs[a][-1]), range(A))),
-                    })
-                    
+                    run.log(
+                        {
+                            "train/total-loss": losses[-1],
+                            "train/joint-loss": loss_joints[-1],
+                            "train/negative-joint-entropy": c_ents[-1],
+                            "train/simplex-distance": c_dists[-1],
+                            "train/l2-distance": c_l2_dists[-1],
+                            "train/time": _time,
+                            "train/mem": mem,
+                            **dict(
+                                map(
+                                    lambda a: (f"train/rec-loss{a}", loss_recs[a][-1]),
+                                    range(A),
+                                )
+                            ),
+                        }
+                    )
+
                 # validation
                 self.model.eval()
                 with th.no_grad():
-                    val_loss = 0.
-                    val_loss_rec = 0.
+                    val_loss = 0.0
+                    val_loss_rec = 0.0
                     if B_val > 1:
-                        for batch_indx, (x, n), in enumerate(test_loader): # batch index, (data, data index)
+                        for (
+                            batch_indx,
+                            (x, n),
+                        ) in enumerate(test_loader):  # batch index, (data, data index)
                             x = x.to(rank)
                             n = n.to(int)
-                            
+
                             xs = [x for _ in range(A)]
 
                             if self.ref_prior:
-                                c_bin = th.tensor(c_onehot[n, :], dtype=th.float, device=rank)
-                                prior_c = th.tensor(c_p[n, :], dtype=th.float, device=rank)
+                                c_bin = th.tensor(
+                                    c_onehot[n, :], dtype=th.float, device=rank
+                                )
+                                prior_c = th.tensor(
+                                    c_p[n, :], dtype=th.float, device=rank
+                                )
                             else:
-                                c_bin = 0.
-                                prior_c = 0.
+                                c_bin = 0.0
+                                prior_c = 0.0
 
-                            x_recs, p_x, r_x, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(x=xs, temp=self.temp, prior_c=prior_c, eval=True)
-                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(x_recs, p_x, r_x, xs, s_means, s_logvars, cs, c_smps, c_bin)
+                            (
+                                x_recs,
+                                p_x,
+                                r_x,
+                                _,
+                                cs,
+                                _,
+                                c_smps,
+                                s_means,
+                                s_logvars,
+                                _,
+                            ) = self.model(
+                                x=xs, temp=self.temp, prior_c=prior_c, eval=True
+                            )
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = (
+                                self.model.loss(
+                                    x_recs,
+                                    p_x,
+                                    r_x,
+                                    xs,
+                                    s_means,
+                                    s_logvars,
+                                    cs,
+                                    c_smps,
+                                    c_bin,
+                                )
+                            )
                             val_loss += loss.data.item()
                             for a in range(A):
                                 val_loss_rec += loss_rec[a].item() / D
@@ -498,44 +738,55 @@ class cpl_mixVAE:
                         xs = [x for _ in range(A)]
 
                         if self.ref_prior:
-                            c_bin = th.tensor(c_onehot[n, :], dtype=th.float, device=rank)
+                            c_bin = th.tensor(
+                                c_onehot[n, :], dtype=th.float, device=rank
+                            )
                             prior_c = th.tensor(c_p[n, :], dtype=th.float, device=rank)
                         else:
-                            c_bin = 0.
-                            prior_c = 0.
+                            c_bin = 0.0
+                            prior_c = 0.0
 
-                        x_recs, p_x, r_x, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(x=xs,
-                                                                                            temp=self.temp,
-                                                                                            prior_c=prior_c, eval=True)
-                        loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(x_recs, p_x, r_x,
-                                                                                       xs, s_means, s_logvars, cs,
-                                                                                       c_smps, c_bin)
+                        x_recs, p_x, r_x, _, cs, _, c_smps, s_means, s_logvars, _ = (
+                            self.model(x=xs, temp=self.temp, prior_c=prior_c, eval=True)
+                        )
+                        loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(
+                            x_recs, p_x, r_x, xs, s_means, s_logvars, cs, c_smps, c_bin
+                        )
                         val_loss = loss.item()
                         for a in range(A):
                             val_loss_rec += loss_rec[a].item() / D
-                        
 
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
-                print(f"val-loss {validation_loss[e]:.2f} | rec-loss {validation_rec_loss[e]:.2f}")
+                print(
+                    f"val-loss {validation_loss[e]:.2f} | rec-loss {validation_rec_loss[e]:.2f}"
+                )
                 if run:
-                    run.log({
-                        'val/total-loss': validation_loss[e],
-                        'val/rec-loss': validation_rec_loss[e]
-                    })
+                    run.log(
+                        {
+                            "val/total-loss": validation_loss[e],
+                            "val/rec-loss": validation_rec_loss[e],
+                        }
+                    )
 
                 if self.save and (e > 0) and (e % 10000 == 0):
-                    trained_model = self.folder + f'/model/cpl_mixVAE_model_epoch_{e}.pth'
+                    trained_model = (
+                        self.folder + f"/model/cpl_mixVAE_model_epoch_{e}.pth"
+                    )
                     print(f"saving model to: {trained_model}")
-                    th.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                    th.save(
+                        {
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                        },
+                        trained_model,
+                    )
 
-
-                    
                     predicted_label = np.zeros((A, len(cs_train[0] * B)))
                     for a in range(A):
                         predicted_label[a] = np.concatenate(cs_train[a])
 
-                    # confusion matrix code            
+                    # confusion matrix code
                     c_agreement = []
                     for a in range(A):
                         pred_a = predicted_label[a, :]
@@ -544,7 +795,9 @@ class cpl_mixVAE:
                             armA_vs_armB = np.zeros((C, C))
 
                             for samp in range(pred_a.shape[0]):
-                                armA_vs_armB[pred_a[samp].astype(int), pred_b[samp].astype(int)] += 1
+                                armA_vs_armB[
+                                    pred_a[samp].astype(int), pred_b[samp].astype(int)
+                                ] += 1
 
                             num_samp_arm = []
                             for ij in range(C):
@@ -552,69 +805,114 @@ class cpl_mixVAE:
                                 sum_column = armA_vs_armB[:, ij].sum()
                                 num_samp_arm.append(max(sum_row, sum_column))
 
-                            armA_vs_armB = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
-                                                    where=np.array(num_samp_arm) != 0)
+                            armA_vs_armB = np.divide(
+                                armA_vs_armB,
+                                np.array(num_samp_arm),
+                                out=np.zeros_like(armA_vs_armB),
+                                where=np.array(num_samp_arm) != 0,
+                            )
                             c_agreement.append(np.diag(armA_vs_armB))
                             ind_sort = np.argsort(c_agreement[-1])
                             plt.figure()
-                            plt.imshow(armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap='binary')
+                            plt.imshow(
+                                armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]],
+                                cmap="binary",
+                            )
                             plt.colorbar()
-                            plt.xlabel('arm_' + str(a), fontsize=20)
+                            plt.xlabel("arm_" + str(a), fontsize=20)
                             plt.xticks(range(C), range(C))
                             plt.yticks(range(C), range(C))
-                            plt.ylabel('arm_' + str(b), fontsize=20)
+                            plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f'Epoch {e} |c|=' + str(C), fontsize=20)
-                            plt.savefig(self.folder + '/consensus_arm_' + str(a) + '_arm_' + str(a) + '_epoch_' + str(e) + '.png', dpi=600)
+                            plt.title(f"Epoch {e} |c|=" + str(C), fontsize=20)
+                            plt.savefig(
+                                self.folder
+                                + "/consensus_arm_"
+                                + str(a)
+                                + "_arm_"
+                                + str(a)
+                                + "_epoch_"
+                                + str(e)
+                                + ".png",
+                                dpi=600,
+                            )
                             plt.close("all")
 
                 epoch_times.append(time.time() - t0)
 
-            print('epoch time:', np.mean(epoch_times))
+            print("epoch time:", np.mean(epoch_times))
+
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
                 ax.plot(range(n_epoch), loss_data, label=label)
-                ax.set_xlabel('# epoch', fontsize=16)
-                ax.set_ylabel('loss value', fontsize=16)
-                ax.set_title(f'{label} loss of the cpl-mixVAE for K={C} and S={self.state_dim}')
-                ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)
+                ax.set_xlabel("# epoch", fontsize=16)
+                ax.set_ylabel("loss value", fontsize=16)
+                ax.set_title(
+                    f"{label} loss of the cpl-mixVAE for K={C} and S={self.state_dim}"
+                )
+                ax.spines["right"].set_visible(False)
+                ax.spines["top"].set_visible(False)
                 ax.legend()
-                ax.figure.savefig(self.folder + f'/model/{filename}_A{A}_{C}_{self.current_time}.png')
+                ax.figure.savefig(
+                    self.folder + f"/model/{filename}_A{A}_{C}_{self.current_time}.png"
+                )
                 plt.close()
-            
+
             if self.save and n_epoch > 0:
                 # Save train loss plot
-                save_loss_plot(losses, 'Training', 'train_loss_curve')
+                save_loss_plot(losses, "Training", "train_loss_curve")
 
                 # Save validation loss plot
-                save_loss_plot(validation_loss, 'Validation', 'validation_loss_curve')
-                
-                trained_model = self.folder + f'/model/cpl_mixVAE_model_before_pruning_A{A}_' + self.current_time + '.pth'
+                save_loss_plot(validation_loss, "Validation", "validation_loss_curve")
+
+                trained_model = (
+                    self.folder
+                    + f"/model/cpl_mixVAE_model_before_pruning_A{A}_"
+                    + self.current_time
+                    + ".pth"
+                )
                 print(f"saving model to: {trained_model}")
-                th.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                th.save(
+                    {
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    trained_model,
+                )
                 bias = self.model.fcc[0].bias.detach().cpu().numpy()
                 mask = range(len(bias))
                 prune_indx = []
                 # plot the learning curve of the network
                 fig, ax = plt.subplots()
-                ax.plot(range(E), losses, label='Training')
-                ax.plot(range(E), validation_loss, label='Validation')
-                ax.set_xlabel('# epoch', fontsize=16)
-                ax.set_ylabel('loss value', fontsize=16)
-                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(C) + ' and S=' + str(S))
-                ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)
+                ax.plot(range(E), losses, label="Training")
+                ax.plot(range(E), validation_loss, label="Validation")
+                ax.set_xlabel("# epoch", fontsize=16)
+                ax.set_ylabel("loss value", fontsize=16)
+                ax.set_title(
+                    "Learning curve of the cpl-mixVAE for K="
+                    + str(C)
+                    + " and S="
+                    + str(S)
+                )
+                ax.spines["right"].set_visible(False)
+                ax.spines["top"].set_visible(False)
                 ax.legend()
-                ax.figure.savefig(self.folder + f'/model/learning_curve_before_pruning_K_A{A}_' + str(C) + '_' + self.current_time + '.png')
+                ax.figure.savefig(
+                    self.folder
+                    + f"/model/learning_curve_before_pruning_K_A{A}_"
+                    + str(C)
+                    + "_"
+                    + self.current_time
+                    + ".png"
+                )
                 plt.close("all")
 
         if n_epoch_p > 0:
             # initialized pruning parameters of the layer of the discrete variable
             bias = self.model.fcc[0].bias.detach().cpu().numpy()
-            pruning_mask = np.where(bias != 0.)[0]
-            prune_indx = np.where(bias == 0.)[0]
+            pruning_mask = np.where(bias != 0.0)[0]
+            prune_indx = np.where(bias == 0.0)[0]
             stop_prune = False
         else:
             stop_prune = True
@@ -622,7 +920,7 @@ class cpl_mixVAE:
         pr = self.n_pr
         ind = []
         stop_prune = True
-        print('warning: stopping pruning')
+        print("warning: stopping pruning")
         while not stop_prune:
             predicted_label = np.zeros((self.n_arm, len(train_loader.dataset)))
 
@@ -640,14 +938,35 @@ class cpl_mixVAE:
                         c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
                         prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
                     else:
-                        c_bin = 0.
-                        prior_c = 0.
+                        c_bin = 0.0
+                        prior_c = 0.0
 
-                    recon, p_x, r_x, x_low, z_category, state, z_smp, mu, log_sigma, _ = self.model(trans_data, self.temp, prior_c, mask=pruning_mask, eval=True)
+                    (
+                        recon,
+                        p_x,
+                        r_x,
+                        x_low,
+                        z_category,
+                        state,
+                        z_smp,
+                        mu,
+                        log_sigma,
+                        _,
+                    ) = self.model(
+                        trans_data, self.temp, prior_c, mask=pruning_mask, eval=True
+                    )
 
                     for a in range(A):
-                        z_encoder = z_category[a].cpu().data.view(z_category[a].size()[0], C).detach().numpy()
-                        predicted_label[a, i * B:min((i + 1) * B, N)] = np.argmax(z_encoder, axis=1)
+                        z_encoder = (
+                            z_category[a]
+                            .cpu()
+                            .data.view(z_category[a].size()[0], C)
+                            .detach()
+                            .numpy()
+                        )
+                        predicted_label[a, i * B : min((i + 1) * B, N)] = np.argmax(
+                            z_encoder, axis=1
+                        )
 
             c_agreement = []
             for arm_a in range(self.n_arm):
@@ -657,7 +976,9 @@ class cpl_mixVAE:
                     armA_vs_armB = np.zeros((C, C))
 
                     for samp in range(pred_a.shape[0]):
-                        armA_vs_armB[pred_a[samp].astype(int), pred_b[samp].astype(int)] += 1
+                        armA_vs_armB[
+                            pred_a[samp].astype(int), pred_b[samp].astype(int)
+                        ] += 1
 
                     num_samp_arm = []
                     for ij in range(C):
@@ -665,21 +986,37 @@ class cpl_mixVAE:
                         sum_column = armA_vs_armB[:, ij].sum()
                         num_samp_arm.append(max(sum_row, sum_column))
 
-                    armA_vs_armB = np.divide(armA_vs_armB, np.array(num_samp_arm), out=np.zeros_like(armA_vs_armB),
-                                             where=np.array(num_samp_arm) != 0)
+                    armA_vs_armB = np.divide(
+                        armA_vs_armB,
+                        np.array(num_samp_arm),
+                        out=np.zeros_like(armA_vs_armB),
+                        where=np.array(num_samp_arm) != 0,
+                    )
                     c_agreement.append(np.diag(armA_vs_armB))
                     ind_sort = np.argsort(c_agreement[-1])
                     plt.figure()
-                    plt.imshow(armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap='binary')
+                    plt.imshow(
+                        armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]], cmap="binary"
+                    )
                     plt.colorbar()
-                    plt.xlabel('arm_' + str(arm_a), fontsize=20)
+                    plt.xlabel("arm_" + str(arm_a), fontsize=20)
                     plt.xticks(range(C), range(C))
                     plt.yticks(range(C), range(C))
-                    plt.ylabel('arm_' + str(arm_b), fontsize=20)
+                    plt.ylabel("arm_" + str(arm_b), fontsize=20)
                     plt.xticks([])
                     plt.yticks([])
-                    plt.title('|c|=' + str(C), fontsize=20)
-                    plt.savefig(self.folder + '/consensus_' + str(pr) + '_arm_' + str(arm_a) + '_arm_' + str(arm_b) + '.png', dpi=600)
+                    plt.title("|c|=" + str(C), fontsize=20)
+                    plt.savefig(
+                        self.folder
+                        + "/consensus_"
+                        + str(pr)
+                        + "_arm_"
+                        + str(arm_a)
+                        + "_arm_"
+                        + str(arm_b)
+                        + ".png",
+                        dpi=600,
+                    )
                     plt.close("all")
 
             c_agreement = np.mean(c_agreement, axis=0)
@@ -699,14 +1036,14 @@ class cpl_mixVAE:
                     ind = np.array(ind)
 
                 ind = ind.astype(int)
-                bias_mask[ind] = 0.
-                weight_mask[ind, :] = 0.
-                fc_mu[:, self.lowD_dim + ind] = 0.
-                fc_sigma[:, self.lowD_dim + ind] = 0.
-                f6_mask[:, ind] = 0.
+                bias_mask[ind] = 0.0
+                weight_mask[ind, :] = 0.0
+                fc_mu[:, self.lowD_dim + ind] = 0.0
+                fc_sigma[:, self.lowD_dim + ind] = 0.0
+                f6_mask[:, ind] = 0.0
                 stop_prune = False
             else:
-                print('No more pruning!')
+                print("No more pruning!")
                 stop_prune = True
 
             print("warning: disabled pruning")
@@ -715,7 +1052,7 @@ class cpl_mixVAE:
                 print("Continue training with pruning ...")
                 print(f"Pruned categories: {ind}")
                 bias = bias_mask.detach().cpu().numpy()
-                pruning_mask = np.where(bias != 0.)[0]
+                pruning_mask = np.where(bias != 0.0)[0]
                 train_loss = np.zeros(n_epoch_p)
                 validation_rec_loss = np.zeros(n_epoch_p)
                 total_val_loss = np.zeros(n_epoch_p)
@@ -728,11 +1065,15 @@ class cpl_mixVAE:
                 train_loss_KL = np.zeros((self.n_arm, self.n_categories, n_epoch_p))
 
                 for a in range(A):
-                    prune.custom_from_mask(self.model.fcc[a], 'weight', mask=weight_mask)
-                    prune.custom_from_mask(self.model.fcc[a], 'bias', mask=bias_mask)
-                    prune.custom_from_mask(self.model.fc_mu[a], 'weight', mask=fc_mu)
-                    prune.custom_from_mask(self.model.fc_sigma[a], 'weight', mask=fc_sigma)
-                    prune.custom_from_mask(self.model.fc6[a], 'weight', mask=f6_mask)
+                    prune.custom_from_mask(
+                        self.model.fcc[a], "weight", mask=weight_mask
+                    )
+                    prune.custom_from_mask(self.model.fcc[a], "bias", mask=bias_mask)
+                    prune.custom_from_mask(self.model.fc_mu[a], "weight", mask=fc_mu)
+                    prune.custom_from_mask(
+                        self.model.fc_sigma[a], "weight", mask=fc_sigma
+                    )
+                    prune.custom_from_mask(self.model.fc6[a], "weight", mask=f6_mask)
 
                 for epoch in trange(n_epoch_p):
                     # training
@@ -748,21 +1089,26 @@ class cpl_mixVAE:
                     ti = np.zeros(len(train_loader))
                     self.model.train()
                     # training
-                    for batch_indx, (data, d_idx), in enumerate(train_loader):
+                    for (
+                        batch_indx,
+                        (data, d_idx),
+                    ) in enumerate(train_loader):
                         # for data in train_loader:
                         data = data.to(self.device)
                         d_idx = d_idx.to(int)
-                        data_bin = 0. * data
-                        data_bin[data > 0.] = 1.
+                        data_bin = 0.0 * data
+                        data_bin[data > 0.0] = 1.0
                         trans_data = []
                         origin_data = []
                         trans_data.append(data)
                         tt = time.time()
                         w_param, bias_param, activ_param = 0, 0, 0
                         # parallelize
-                        for arm in range(A-1):
+                        for arm in range(A - 1):
                             if self.aug_file:
-                                noise = torch.randn(batch_size, self.aug_param['num_n']).to(self.device)
+                                noise = torch.randn(
+                                    batch_size, self.aug_param["num_n"]
+                                ).to(self.device)
                                 _, gen_data = self.netA(data, noise, True, self.device)
                                 # if self.aug_param['n_zim'] > 1:
                                 #     data_bin = 0. * data
@@ -775,16 +1121,33 @@ class cpl_mixVAE:
                                 trans_data.append(data)
 
                         if self.ref_prior:
-                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
+                            c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(
+                                self.device
+                            )
                             prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
                         else:
-                            c_bin = 0.
-                            prior_c = 0.
+                            c_bin = 0.0
+                            prior_c = 0.0
 
                         self.optimizer.zero_grad()
-                        recon_batch, p_x, r_x, x_low, qz, s, z, mu, log_var, log_qz = self.model(trans_data, self.temp, prior_c, mask=pruning_mask)
-                        loss, loss_rec, loss_joint, entropy, dist_z, d_qz, KLD_cont, min_var_0, _ = self.model.loss(recon_batch, p_x, r_x,
-                                                                                        trans_data, mu, log_var, qz, z, c_bin)
+                        recon_batch, p_x, r_x, x_low, qz, s, z, mu, log_var, log_qz = (
+                            self.model(
+                                trans_data, self.temp, prior_c, mask=pruning_mask
+                            )
+                        )
+                        (
+                            loss,
+                            loss_rec,
+                            loss_joint,
+                            entropy,
+                            dist_z,
+                            d_qz,
+                            KLD_cont,
+                            min_var_0,
+                            _,
+                        ) = self.model.loss(
+                            recon_batch, p_x, r_x, trans_data, mu, log_var, qz, z, c_bin
+                        )
 
                         loss.backward()
                         self.optimizer.step()
@@ -809,41 +1172,88 @@ class cpl_mixVAE:
                     for a in range(A):
                         train_recon[a, epoch] = train_loss_rec[a] / (batch_indx + 1)
                         for c in range(C):
-                            train_loss_KL[a, c, epoch] = train_KLD_cont[a, c] / (batch_indx + 1)
+                            train_loss_KL[a, c, epoch] = train_KLD_cont[a, c] / (
+                                batch_indx + 1
+                            )
 
-                    print('====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {'
-                          ':.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}'.format(
-                        epoch, train_loss[epoch], train_recon[0, epoch], train_recon[1, epoch], train_loss_joint[epoch],
-                        train_entropy[epoch], train_distance[epoch], time.time() - t0))
+                    print(
+                        "====> Epoch:{}, Total Loss: {:.4f}, Rec_arm_1: {"
+                        ":.4f}, Rec_arm_2: {:.4f}, Joint Loss: {:.4f}, Entropy: {:.4f}, Distance: {:.4f}, Elapsed Time:{:.2f}".format(
+                            epoch,
+                            train_loss[epoch],
+                            train_recon[0, epoch],
+                            train_recon[1, epoch],
+                            train_loss_joint[epoch],
+                            train_entropy[epoch],
+                            train_distance[epoch],
+                            time.time() - t0,
+                        )
+                    )
 
                     # validation
                     self.model.eval()
                     with th.no_grad():
-                        val_loss_rec = 0.
-                        val_loss = 0.
+                        val_loss_rec = 0.0
+                        val_loss = 0.0
                         if test_loader.batch_size > 1:
-                            for batch_indx, (data_val, d_idx), in enumerate(test_loader):
+                            for (
+                                batch_indx,
+                                (data_val, d_idx),
+                            ) in enumerate(test_loader):
                                 d_idx = d_idx.to(int)
                                 data_val = data_val.to(self.device)
-                                    
+
                                 trans_val_data = []
                                 for arm in range(self.n_arm):
                                     trans_val_data.append(data_val)
 
                                 if self.ref_prior:
-                                    c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                                    prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                                    c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(
+                                        self.device
+                                    )
+                                    prior_c = torch.FloatTensor(c_p[d_idx, :]).to(
+                                        self.device
+                                    )
                                 else:
-                                    c_bin = 0.
-                                    prior_c = 0.
+                                    c_bin = 0.0
+                                    prior_c = 0.0
 
-                                recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
-                                                                                        eval=True, mask=pruning_mask)
-                                loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
-                                                                                            mu, log_var, qc, c, c_bin)
+                                (
+                                    recon_batch,
+                                    p_x,
+                                    r_x,
+                                    x_low,
+                                    qc,
+                                    s,
+                                    c,
+                                    mu,
+                                    log_var,
+                                    _,
+                                ) = self.model(
+                                    x=trans_val_data,
+                                    temp=self.temp,
+                                    prior_c=prior_c,
+                                    eval=True,
+                                    mask=pruning_mask,
+                                )
+                                loss, loss_rec, loss_joint, _, _, _, _, _, _ = (
+                                    self.model.loss(
+                                        recon_batch,
+                                        p_x,
+                                        r_x,
+                                        trans_val_data,
+                                        mu,
+                                        log_var,
+                                        qc,
+                                        c,
+                                        c_bin,
+                                    )
+                                )
                                 val_loss += loss.data.item()
                                 for arm in range(self.n_arm):
-                                    val_loss_rec += loss_rec[arm].data.item() / self.input_dim
+                                    val_loss_rec += (
+                                        loss_rec[arm].data.item() / self.input_dim
+                                    )
                         else:
                             batch_indx = 0
                             data_val, d_idx = test_loader.dataset.tensors
@@ -854,56 +1264,104 @@ class cpl_mixVAE:
                                 trans_val_data.append(data_val)
 
                             if self.ref_prior:
-                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(self.device)
-                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(self.device)
+                                c_bin = torch.FloatTensor(c_onehot[d_idx, :]).to(
+                                    self.device
+                                )
+                                prior_c = torch.FloatTensor(c_p[d_idx, :]).to(
+                                    self.device
+                                )
                             else:
-                                c_bin = 0.
-                                prior_c = 0.
+                                c_bin = 0.0
+                                prior_c = 0.0
 
-                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = self.model(x=trans_val_data, temp=self.temp, prior_c=prior_c,
-                                                                                    eval=True, mask=pruning_mask)
-                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = self.model.loss(recon_batch, p_x, r_x, trans_val_data,
-                                                                                        mu, log_var, qc, c, c_bin)
+                            recon_batch, p_x, r_x, x_low, qc, s, c, mu, log_var, _ = (
+                                self.model(
+                                    x=trans_val_data,
+                                    temp=self.temp,
+                                    prior_c=prior_c,
+                                    eval=True,
+                                    mask=pruning_mask,
+                                )
+                            )
+                            loss, loss_rec, loss_joint, _, _, _, _, _, _ = (
+                                self.model.loss(
+                                    recon_batch,
+                                    p_x,
+                                    r_x,
+                                    trans_val_data,
+                                    mu,
+                                    log_var,
+                                    qc,
+                                    c,
+                                    c_bin,
+                                )
+                            )
                             val_loss = loss.data.item()
                             for a in range(A):
                                 val_loss_rec += loss_rec[a].data.item() / D
-                            
 
                     validation_rec_loss[epoch] = val_loss_rec / (batch_indx + 1) / A
                     total_val_loss[epoch] = val_loss / (batch_indx + 1)
-                    print('====> Validation Total Loss: {:.4}, Rec. Loss: {:.4f}'.format(total_val_loss[epoch], validation_rec_loss[epoch]))
+                    print(
+                        "====> Validation Total Loss: {:.4}, Rec. Loss: {:.4f}".format(
+                            total_val_loss[epoch], validation_rec_loss[epoch]
+                        )
+                    )
 
                 for a in range(A):
-                    prune.remove(self.model.fcc[a], 'weight')
-                    prune.remove(self.model.fcc[a], 'bias')
-                    prune.remove(self.model.fc_mu[a], 'weight')
-                    prune.remove(self.model.fc_sigma[a], 'weight')
-                    prune.remove(self.model.fc6[a], 'weight')
+                    prune.remove(self.model.fcc[a], "weight")
+                    prune.remove(self.model.fcc[a], "bias")
+                    prune.remove(self.model.fc_mu[a], "weight")
+                    prune.remove(self.model.fc_sigma[a], "weight")
+                    prune.remove(self.model.fc6[a], "weight")
 
-
-                trained_model = self.folder + '/model/cpl_mixVAE_model_after_pruning_' + str(pr+1) + '_' + self.current_time + '.pth'
-                th.save({'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict()}, trained_model)
+                trained_model = (
+                    self.folder
+                    + "/model/cpl_mixVAE_model_after_pruning_"
+                    + str(pr + 1)
+                    + "_"
+                    + self.current_time
+                    + ".pth"
+                )
+                th.save(
+                    {
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                    },
+                    trained_model,
+                )
                 # plot the learning curve of the network
                 fig, ax = plt.subplots()
-                ax.plot(range(n_epoch_p), train_loss, label='Training')
-                ax.plot(range(n_epoch_p), total_val_loss, label='Validation')
-                ax.set_xlabel('# epoch', fontsize=16)
-                ax.set_ylabel('loss value', fontsize=16)
-                ax.set_title('Learning curve of the cpl-mixVAE for K=' + str(self.n_categories) + ' and S=' + str(
-                    self.state_dim))
-                ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)
+                ax.plot(range(n_epoch_p), train_loss, label="Training")
+                ax.plot(range(n_epoch_p), total_val_loss, label="Validation")
+                ax.set_xlabel("# epoch", fontsize=16)
+                ax.set_ylabel("loss value", fontsize=16)
+                ax.set_title(
+                    "Learning curve of the cpl-mixVAE for K="
+                    + str(self.n_categories)
+                    + " and S="
+                    + str(self.state_dim)
+                )
+                ax.spines["right"].set_visible(False)
+                ax.spines["top"].set_visible(False)
                 ax.legend()
-                ax.figure.savefig(self.folder + '../model/learning_curve_after_pruning_' + str(pr+1) + '_K_' + str(
-                    self.n_categories) + '_' + self.current_time + '.png')
+                ax.figure.savefig(
+                    self.folder
+                    + "../model/learning_curve_after_pruning_"
+                    + str(pr + 1)
+                    + "_K_"
+                    + str(self.n_categories)
+                    + "_"
+                    + self.current_time
+                    + ".png"
+                )
                 plt.close("all")
                 pr += 1
-        
-        print('Training is done!')
-    
+
+        print("Training is done!")
+
         # return trained_model
 
-    
     def eval_model(self, dl: DataLoader, c_p=0, c_onehot=0):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -931,8 +1389,8 @@ class cpl_mixVAE:
 
         # Extract bias and pruning mask
         bias = asnp(self.model.fcc[0].bias)
-        pruning_mask = np.where(bias != 0.)[0]
-        prune_indx = np.where(bias == 0.)[0]
+        pruning_mask = np.where(bias != 0.0)[0]
+        prune_indx = np.where(bias == 0.0)[0]
 
         # Initialize arrays for storing evaluation results
         x_recs = np.zeros((A, N, D))
@@ -962,62 +1420,97 @@ class cpl_mixVAE:
                 data_idx = data_idx.to(int)
 
                 if self.ref_prior:
-                    c_bin = th.tensor(c_onehot[data_idx, :], dtype=th.float, device=self.device)
-                    c_prior = th.tensor(c_p[data_idx, :], dtype=th.float, device=self.device)
+                    c_bin = th.tensor(
+                        c_onehot[data_idx, :], dtype=th.float, device=self.device
+                    )
+                    c_prior = th.tensor(
+                        c_p[data_idx, :], dtype=th.float, device=self.device
+                    )
                 else:
-                    c_bin = 0.
-                    c_prior = 0.
+                    c_bin = 0.0
+                    c_prior = 0.0
 
                 xs = [x for _ in range(A)]
 
-                _x_recs, p_x, r_x, _x_lows, _cs, _s_smps, _c_smps, _s_means, _s_logvars, _ = self.model(xs, self.temp, prior_c=c_prior, eval=True, mask=pruning_mask)
-                _loss, _loss_recs, _, _, _c_dists, _c_l2_dists, _, _, _lls = self.model.loss(_x_recs, p_x, r_x, xs, _s_means, _s_logvars, _cs, _c_smps, c_bin)
+                (
+                    _x_recs,
+                    p_x,
+                    r_x,
+                    _x_lows,
+                    _cs,
+                    _s_smps,
+                    _c_smps,
+                    _s_means,
+                    _s_logvars,
+                    _,
+                ) = self.model(
+                    xs, self.temp, prior_c=c_prior, eval=True, mask=pruning_mask
+                )
+                _loss, _loss_recs, _, _, _c_dists, _c_l2_dists, _, _, _lls = (
+                    self.model.loss(
+                        _x_recs, p_x, r_x, xs, _s_means, _s_logvars, _cs, _c_smps, c_bin
+                    )
+                )
                 losses.append(_loss.item() if isinstance(_loss, th.Tensor) else _loss)
-                c_dists.append(_c_dists.item() if isinstance(_c_dists, th.Tensor) else _c_dists)
-                c_l2_dists.append(_c_l2_dists.item() if isinstance(_c_l2_dists, th.Tensor) else _c_l2_dists)
+                c_dists.append(
+                    _c_dists.item() if isinstance(_c_dists, th.Tensor) else _c_dists
+                )
+                c_l2_dists.append(
+                    _c_l2_dists.item()
+                    if isinstance(_c_l2_dists, th.Tensor)
+                    else _c_l2_dists
+                )
 
                 if self.ref_prior:
-                    predicted_label[0, n_fst:n_lst] = np.argmax(c_p[data_idx, :], axis=1) + 1
+                    predicted_label[0, n_fst:n_lst] = (
+                        np.argmax(c_p[data_idx, :], axis=1) + 1
+                    )
 
                 for a, (loss_rec, ll) in enumerate(zip(_loss_recs, _lls)):
                     loss_recs[a].append(loss_rec.item())
                     lls[a].append(ll.item())
 
-                for a, (s_mean, s_logvar, c, c_smp, x_low, x_rec) in enumerate(map(lambda ys: map(asnp, ys), zip(_s_means, _s_logvars, _cs, _c_smps, _x_lows, _x_recs))):
+                for a, (s_mean, s_logvar, c, c_smp, x_low, x_rec) in enumerate(
+                    map(
+                        lambda ys: map(asnp, ys),
+                        zip(_s_means, _s_logvars, _cs, _c_smps, _x_lows, _x_recs),
+                    )
+                ):
                     s_means[a, n_fst:n_lst, :] = s_mean
                     s_logvars[a, n_fst:n_lst, :] = s_logvar
                     cs[a, n_fst:n_lst, :] = c
                     c_smps[a, n_fst:n_lst, :] = c_smp
-                    x_lows[a,  n_fst:n_lst, :] = x_low
+                    x_lows[a, n_fst:n_lst, :] = x_low
                     x_recs[a, n_fst:n_lst, :] = x_rec
                     data_indx[n_fst:n_lst] = data_idx.numpy().astype(int)
                     for n, c_n in enumerate(c):
                         state_cat[a, n_fst + n] = np.argmax(c_n) + 1
                         prob_cat[a, n_fst + n] = np.max(c_n)
                     if self.ref_prior:
-                        predicted_label[a+1, n_fst:n_lst] = np.argmax(c, axis=-1) + 1
+                        predicted_label[a + 1, n_fst:n_lst] = np.argmax(c, axis=-1) + 1
                     else:
                         predicted_label[a, n_fst:n_lst] = np.argmax(c, axis=-1) + 1
 
         return {
-            'state_mu': s_means,
-            'state_var': s_logvars,
-            'state_cat': state_cat,
-            'prob_cat': prob_cat,
-            'total_loss_rec': np.array([np.mean(np.array(loss_recs[a])) for a in range(A)]),
-            'total_likelihood': np.array([np.mean(np.array(lls[a])) for a in range(A)]),
-            'total_dist_z': np.mean(np.array(c_dists)),
-            'total_dist_qz': np.mean(np.array(c_l2_dists)),
-            'mean_test_rec': np.zeros(A),
-            'predicted_label': predicted_label,
-            'data_indx': data_indx,
-            'z_prob': cs,
-            'z_sample': c_smps,
-            'x_low': x_lows,
-            'recon_c': x_recs,
-            'prune_indx': prune_indx
+            "state_mu": s_means,
+            "state_var": s_logvars,
+            "state_cat": state_cat,
+            "prob_cat": prob_cat,
+            "total_loss_rec": np.array(
+                [np.mean(np.array(loss_recs[a])) for a in range(A)]
+            ),
+            "total_likelihood": np.array([np.mean(np.array(lls[a])) for a in range(A)]),
+            "total_dist_z": np.mean(np.array(c_dists)),
+            "total_dist_qz": np.mean(np.array(c_l2_dists)),
+            "mean_test_rec": np.zeros(A),
+            "predicted_label": predicted_label,
+            "data_indx": data_indx,
+            "z_prob": cs,
+            "z_sample": c_smps,
+            "x_low": x_lows,
+            "recon_c": x_recs,
+            "prune_indx": prune_indx,
         }
-
 
     def save_file(self, fname, **kwargs):
         """
@@ -1028,7 +1521,7 @@ class cpl_mixVAE:
             kwarg: keyword arguments for input variables e.g., x=[], y=[], etc.
         """
 
-        f = open(fname + '.p', "wb")
+        f = open(fname + ".p", "wb")
         data = {}
         for k, v in kwargs.items():
             data[k] = v
@@ -1047,7 +1540,7 @@ class cpl_mixVAE:
             data: a dictionary including the save dataset
         """
 
-        data = pickle.load(open(fname + '.p', "rb"))
+        data = pickle.load(open(fname + ".p", "rb"))
         return data
 
 
