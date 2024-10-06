@@ -327,8 +327,6 @@ class mixVAE_model(nn.Module):
                 c_tmp = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
                 c = th.zeros((c_prob.size(0), c_prob.size(1)), device=self.device)
                 c[:, mask] = c_tmp
-
-                # c[:, mask] = F.softmax(c_prob[:, mask] / self.tau, dim=-1)
             else:
                 c = F.softmax(c_prob / self.tau, dim=-1)
 
@@ -550,15 +548,9 @@ class mixVAE_model(nn.Module):
             kl_ss.append(kl_s)
             loss_inds.append(loss_ind)
 
-            # you can decouple these two parts of the loss()
-
             logc_a = th.log(c_a + self.eps)
             inv_var_c_a = inv_var(c_a, self.eps)
 
-            # f(x) := log(x) * inv_var(x)
-            # C = [c_a^T, c_b^T, c_c^T] ∈ R^{N x C}
-            # f(C_A) = [f(c_a), f(c_b), f(c_c)] ∈ R^{N x C}
-            # f(C_B) = [f(c_a), f(c_b), f(c_c)] ∈ R^{N x C}
             for c_b, c_smp_b in zip(_c[a + 1 :], c_smps[a + 1 :]):  # b ∈ a+1..A-1
                 logc_b = th.log(c_b + self.eps)
                 inv_var_c_b = inv_var(c_b, self.eps)
