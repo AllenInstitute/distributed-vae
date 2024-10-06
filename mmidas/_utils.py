@@ -12,7 +12,6 @@ def unstable(func):
             f"{func.__name__}() is unstable", category=FutureWarning, stacklevel=2
         )
         return func(*args, **kwargs)
-
     return wrapper
 
 
@@ -26,13 +25,23 @@ def mk_masks(bias: th.Tensor) -> tuple[np.ndarray, np.ndarray]:
 
 
 # Note, all labels are assumed to be present in both arrays
-def confmat(labels1, labels2):
+def mk_confmat(labels1, labels2):
     assert len(labels1) == len(labels2)
     assert len(labels1.shape) == len(labels2.shape) == 1
     K1, K2 = len(np.unique(labels1)), len(np.unique(labels2))
     matrix = np.zeros((K1, K2), dtype=int)
     np.add.at(matrix, (labels1, labels2), 1)
     return matrix
+
+
+def confmat_normalize(cm):
+    # algebra: this is an evaluation/reduction operation
+    maxes = np.maximum(np.sum(cm, axis=0), np.sum(cm, axis=1))
+    return np.divide(cm, maxes)
+
+
+def confmat_mean(cm):
+    return np.mean(np.diag(cm))
 
 
 # Note, all labels are assumed to be present in both arrays
