@@ -8,7 +8,6 @@ import socket
 import time
 import os
 
-from pyrsistent import m, v, pmap, pvector, PMap, PVector
 from tqdm import tqdm
 import torch
 import torch.distributed as dist

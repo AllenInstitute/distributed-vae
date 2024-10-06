@@ -3,7 +3,9 @@ import warnings
 
 import torch as th
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
+# types: labels, probs, confmat
 
 def unstable(func):
     @functools.wraps(func)
@@ -19,17 +21,28 @@ def to_np(x):
     return x.cpu().detach().numpy()
 
 
+def reassign(x):
+    _, col_inds = linear_sum_assignment(-x)
+    return x[:, col_inds]
+
+
 @unstable
 def mk_masks(bias: th.Tensor) -> tuple[np.ndarray, np.ndarray]:
     return np.where(bias.cpu() != 0)[0], np.where(bias.cpu() == 0)[0]
 
 
-# Note, all labels are assumed to be present in both arrays
-def mk_confmat(labels1, labels2):
+def compute_labels(probs):
+    return np.argmax(probs, axis=-1)
+
+
+# Note, all labels are assumed to be present in at least one of the arrays
+def compute_confmat(labels1, labels2, K=None):
     assert len(labels1) == len(labels2)
     assert len(labels1.shape) == len(labels2.shape) == 1
-    K1, K2 = len(np.unique(labels1)), len(np.unique(labels2))
-    matrix = np.zeros((K1, K2), dtype=int)
+    assert labels1.dtype == labels2.dtype == np.int64
+    if K is None:
+        K = max(len(np.unique(labels1)), len(np.unique(labels2)))
+    matrix = np.zeros((K, K), dtype=int)
     np.add.at(matrix, (labels1, labels2), 1)
     return matrix
 

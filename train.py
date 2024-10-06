@@ -24,7 +24,6 @@ import random
 from mmidas.cpl_mixvae import cpl_mixVAE
 from mmidas.utils.tools import get_paths
 from mmidas.utils.dataloader import load_data, get_loaders
-from pyrsistent import pmap
 
 from mmidas.nn_model import mixVAE_model
 
@@ -58,7 +57,7 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     saving_folder = str(
         config["paths"]["main_dir"] / config[sub_file]["saving_path"] / folder_name
     )
-    return mapv(
+    return dict(mapv(
         str,
         {
             "data": data_file,
@@ -68,7 +67,7 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
             if trained
             else "",
         }.items(),
-    )
+    ))
 
 
 def set_seeds(s: int) -> None:

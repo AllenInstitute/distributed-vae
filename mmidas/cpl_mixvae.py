@@ -33,7 +33,7 @@ from .augmentation.udagan import *
 from .nn_model import mixVAE_model, VAEConfig
 from .utils.data_tools import split_data_Kfold
 
-from mmidas._utils import to_np
+from mmidas._utils import to_np, compute_labels, compute_confmat, confmat_mean, confmat_normalize
 
 
 def bytes_to_mb(x):
@@ -322,6 +322,7 @@ class cpl_mixVAE:
         rank=None,
         run=None,
         ws=1,
+        good_enuf_consensus=0.8
     ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -364,6 +365,7 @@ class cpl_mixVAE:
         c_ents = []
         c_l2_dists = []
         c_dists = []
+        consensuss = []
 
         validation_loss = np.zeros(E)
         validation_rec_loss = np.zeros(E)
@@ -392,8 +394,10 @@ class cpl_mixVAE:
                 t0 = time.time()
                 cs_train = [[] for _ in range(A)]
 
+                probs = [[] for _ in range(A)]
+
                 self.model.train()
-                for x, n in train_loader:
+                for (x, n) in train_loader:
                     x = x.to(rank)
                     n = n.to(int)
 
@@ -449,6 +453,8 @@ class cpl_mixVAE:
                     c_dist += _c_dist
                     c_ent += _c_ent
                     loss_rec += _loss_rec / D
+                    for a in range(A):
+                        probs[a].append(to_np(cs[a]))
 
                 if ws > 1:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
@@ -464,9 +470,16 @@ class cpl_mixVAE:
                 for a in range(A):
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
+                labels = [np.ravel(compute_labels(np.array(probs[a]))) for a in range(A)]
+                consensus = []
+                for a in range(A):
+                    for b in range(a + 1, A):
+                        consensus.append(confmat_mean(confmat_normalize(compute_confmat(labels[a], labels[b], C))))
+                consensuss.append(np.mean(np.array(consensus)))
+
                 _time = time.time() - t0
                 print(
-                    f"epoch {e} | loss: {losses[-1]:.2f} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
+                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | consensus: {consensuss[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
                     end="",
                 )
 
@@ -480,6 +493,7 @@ class cpl_mixVAE:
                             "train/l2-distance": c_l2_dists[-1],
                             "train/time": _time,
                             "train/mem": mem,
+                            "train/consensus": consensuss[-1],
                             **dict(
                                 map(
                                     lambda a: (f"train/rec-loss{a}", loss_recs[a][-1]),
@@ -654,6 +668,9 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
+
+                        if consensuss[-1] >= good_enuf_consensus:
+                            break
 
                 epoch_times.append(time.time() - t0)
 
