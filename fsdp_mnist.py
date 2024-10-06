@@ -35,8 +35,6 @@ import matplotlib.pyplot as plt
 
 import wandb
 
-from torch_utils import current_gpu, cpu_count
-
 def is_imported(m):
   return m in globals()
 

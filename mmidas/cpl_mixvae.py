@@ -22,7 +22,6 @@ from torch.optim.optimizer import Optimizer
 from sklearn.metrics.cluster import adjusted_rand_score
 from sklearn.model_selection import train_test_split
 from torch.autograd import Variable
-from torch.profiler import profile, record_function, ProfilerActivity
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
@@ -33,71 +32,26 @@ import wandb
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model, VAEConfig
 from .utils.data_tools import split_data_Kfold
-from .utils.dataloader import get_sampler, is_dist_sampler
 
-Device = Literal["cpu", "cuda", "mps"] | int
-
-# TODO
+from mmidas._utils import to_np
 
 
 def bytes_to_mb(x):
     return x / 1e6
 
 
-@dataclass
-class Master:
-    rank: Literal[0, "mps", "cpu", "cuda"]
-
-
-@dataclass
-class Worker:
-    rank: int
-
-
-Rank = Master | Worker
-
-# Loss = LocalLoss | DistLoss
-
-
-def mk_rank(i: int | Literal["mps", "cpu", "cuda"]) -> Rank:
-    match i:
-        case 0 | "mps" | "cpu" | "cuda":
-            return Master(i)
-        case int(j):
-            return Worker(j)
-        case _:
-            assert_never(i)
-
-
 def is_master(rank):
-    return rank == 0 or rank == "mps" or rank == "cpu" or isinstance(rank, Master)
-
-
-def compose2(f, g):
-    return lambda *a, **kw: f(g(*a, **kw))
+    return rank == 0 or rank == "mps" or rank == "cpu"
 
 
 def compose(*fs):
+    def compose2(f, g):
+        return lambda *a, **kw: f(g(*a, **kw))
     return reduce(compose2, fs)
 
 
-def mk_pbar(seq: Sequence, r: Rank, *fs) -> Sequence:
+def mk_pbar(seq: Sequence, r, *fs) -> Sequence:
     return (lambda x: tqdm(x, total=len(x)) if is_master(r) else x)(compose(*fs)(seq))  # type: ignore
-
-    # _seq: Sequence = compose(*fs)(seq)
-    # match r:
-    #     case Master(_):
-    #         return tqdm(_seq, total=len(seq)) # type: ignore
-    #     case Worker(_):
-    #         return _seq
-    #     case _:
-    #         assert_never(r)
-
-    # loader =
-    # if is_master(rank):
-    #     return tqdm(loader, total=len(loader), unit_scale=True)
-    # else:
-    #     return loader
 
 
 def is_parallel(world_size):
@@ -139,26 +93,13 @@ def print_val_loss(val_loss, val_loss_rec, rank):
         )
 
 
-def avg_recon_loss(l: np.ndarray) -> float:
-    return np.mean(l, axis=0)
-
-
 def unwrap[T](x: Optional[T]) -> T:
     if x is None:
         raise ValueError("error: expected non-None value")
     return x
 
 
-def len_cpus(deterministic=False) -> int:
-    if deterministic:
-        return 1
-    elif hasattr(os, "sched_getaffinity"):
-        return len(os.sched_getaffinity(0))
-    else:
-        return unwrap(os.cpu_count())
-
-
-def get_device(device: Optional[Device] = None) -> th.device:
+def get_device(device: Optional[str | int] = None) -> th.device:
     match device:
         case "cpu" | "mps" as d:
             print(f"using {d}")
@@ -200,16 +141,12 @@ def mk_augmenter(
         return aug_model, aug_param, netA
 
 
-def asnp(x):
-    return x.cpu().detach().numpy()
-
-
 class cpl_mixVAE:
     def __init__(
         self,
         saving_folder="",
         aug_file="",
-        device: Optional[Device] = None,
+        device = None,
         eps=1e-8,
         save_flag=True,
         load_weights=True,
@@ -240,128 +177,6 @@ class cpl_mixVAE:
         else:
             self.aug_model, self.aug_param, self.netA = None, None, None
 
-    def get_dataloader(
-        self,
-        dataset,
-        label,
-        batch_size=128,
-        n_aug_smp=0,
-        k_fold=10,
-        fold=0,
-        rank=-1,
-        world_size=-1,
-        use_dist_sampler=False,
-        deterministic=False,
-    ):
-        self.batch_size = batch_size
-
-        train_inds, test_inds = split_data_Kfold(label, k_fold)
-        train_ind = train_inds[fold].astype(int)
-        test_ind = test_inds[fold].astype(int)
-
-        train_set_torch = torch.FloatTensor(dataset[train_ind, :])
-        train_ind_torch = torch.FloatTensor(train_ind)
-        if n_aug_smp > 0:
-            train_set = train_set_torch.clone()
-            train_set_ind = train_ind_torch.clone()
-            for n_a in range(n_aug_smp):
-                if self.aug_file:
-                    noise = torch.randn(
-                        train_set_torch.shape[0], self.aug_param["num_n"]
-                    )
-                    if self.gpu:
-                        _, gen_data = self.netA(
-                            train_set_torch.cuda(self.device),
-                            noise.cuda(self.device),
-                            self.device,
-                        )
-                    else:
-                        _, gen_data = self.netA(train_set_torch, noise, self.device)
-
-                    train_set = torch.cat((train_set, gen_data.cpu().detach()), 0)
-
-                else:
-                    train_set = torch.cat((train_set, train_set_torch), 0)
-                train_set_ind = torch.cat((train_set_ind, train_ind_torch), 0)
-
-            train_data = TensorDataset(train_set, train_set_ind)
-        else:
-            train_data = TensorDataset(train_set_torch, train_ind_torch)
-
-        if world_size > 1 and use_dist_sampler:
-            train_sampler = DistributedSampler(
-                train_data, rank=rank, num_replicas=world_size, shuffle=True
-            )
-            train_loader = DataLoader(
-                train_data,
-                batch_size=batch_size,
-                drop_last=True,
-                pin_memory=True,
-                persistent_workers=True,
-                num_workers=len_cpus(deterministic),
-                sampler=train_sampler,
-            )
-        else:
-            train_loader = DataLoader(
-                train_data,
-                batch_size=batch_size,
-                drop_last=True,
-                pin_memory=True,
-                persistent_workers=True,
-                num_workers=len_cpus(deterministic),
-            )
-
-        val_set_torch = torch.FloatTensor(dataset[test_ind, :])
-        val_ind_torch = torch.FloatTensor(test_ind)
-        validation_data = TensorDataset(val_set_torch, val_ind_torch)
-        validation_loader = DataLoader(
-            validation_data,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=False,
-            pin_memory=True,
-        )
-
-        test_set_torch = torch.FloatTensor(dataset[test_ind, :])
-        test_ind_torch = torch.FloatTensor(test_ind)
-        test_data = TensorDataset(test_set_torch, test_ind_torch)
-
-        if world_size > 1 and use_dist_sampler:
-            print("using distributed sampler...")
-            test_sampler = DistributedSampler(
-                test_data, num_replicas=world_size, rank=rank, shuffle=True
-            )
-            test_loader = DataLoader(
-                test_data,
-                batch_size=1,
-                drop_last=False,
-                pin_memory=True,
-                persistent_workers=True,
-                num_workers=len_cpus(deterministic),
-                sampler=test_sampler,
-            )
-        else:
-            test_loader = DataLoader(
-                test_data,
-                batch_size=1,
-                drop_last=True,
-                pin_memory=True,
-                persistent_workers=True,
-                num_workers=len_cpus(deterministic),
-            )
-
-        data_set_troch = torch.FloatTensor(dataset)
-        all_ind_torch = torch.FloatTensor(range(dataset.shape[0]))
-        all_data = TensorDataset(data_set_troch, all_ind_torch)
-        alldata_loader = DataLoader(
-            all_data,
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False,
-            pin_memory=True,
-        )
-
-        return alldata_loader, train_loader, validation_loader, test_loader
 
     def init_model(
         self,
@@ -493,6 +308,7 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
+    # TODO: add stopping criteria for training
     def train(
         self,
         train_loader,
@@ -1388,7 +1204,7 @@ class cpl_mixVAE:
         self.model.eval()
 
         # Extract bias and pruning mask
-        bias = asnp(self.model.fcc[0].bias)
+        bias = to_np(self.model.fcc[0].bias)
         pruning_mask = np.where(bias != 0.0)[0]
         prune_indx = np.where(bias == 0.0)[0]
 
@@ -1472,7 +1288,7 @@ class cpl_mixVAE:
 
                 for a, (s_mean, s_logvar, c, c_smp, x_low, x_rec) in enumerate(
                     map(
-                        lambda ys: map(asnp, ys),
+                        lambda ys: map(to_np, ys),
                         zip(_s_means, _s_logvars, _cs, _c_smps, _x_lows, _x_recs),
                     )
                 ):

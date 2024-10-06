@@ -32,9 +32,6 @@ import wandb
 
 import fsdp_mnist as utils
 
-# Args = LocalArgs | DistArgs
-# train = train | wandb_train
-
 
 def mapv(f, assocs):
     return starmap(lambda k, v: (k, f(v)), assocs)
@@ -61,21 +58,16 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     saving_folder = str(
         config["paths"]["main_dir"] / config[sub_file]["saving_path"] / folder_name
     )
-    return pmap(
-        mapv(
-            str,
-            {
-                "data": data_file,
-                "saving": mk_saving_folder(
-                    saving_folder, count_existing(saving_folder)
-                ),
-                "aug": config["paths"]["main_dir"] / config[sub_file]["aug_model"],
-                "trained": config["paths"]["main_dir"]
-                / config[sub_file]["trained_model"]
-                if trained
-                else "",
-            }.items(),
-        )
+    return mapv(
+        str,
+        {
+            "data": data_file,
+            "saving": mk_saving_folder(saving_folder, count_existing(saving_folder)),
+            "aug": config["paths"]["main_dir"] / config[sub_file]["aug_model"],
+            "trained": config["paths"]["main_dir"] / config[sub_file]["trained_model"]
+            if trained
+            else "",
+        }.items(),
     )
 
 
@@ -104,20 +96,20 @@ def main(r, ws, args):
     if ws > 1:
         utils.set_print(r)  # prepend "[rank: r]" to print statements
         utils.init_dist(r, ws, args.addr, args.port)
-        th.cuda.set_device(r)
+        cuda.set_device(r)
 
     # Load configuration paths
     files = parse_toml("mmidas.toml", "mouse_smartseq", args, trained=False)
-    print(f" -- making folders: {files.saving} -- ")
-    os.makedirs(files.saving, exist_ok=True)
-    os.makedirs(files.saving + "/model", exist_ok=True)
+    print(f" -- making folders: {files['saving']} -- ")
+    os.makedirs(files["saving"], exist_ok=True)
+    os.makedirs(files["saving"] + "/model", exist_ok=True)
 
     # Load data
-    data = load_data(datafile=files.data)
+    data = load_data(datafile=files["data"])
     print(f"# cells: {data['log1p'].shape[0]}, # genes: {data['log1p'].shape[1]}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
-    cplMixVAE = cpl_mixVAE(files.saving, files.aug, r)
+    cplMixVAE = cpl_mixVAE(files["saving"], files["aug"], r)
 
     # Make data loaders for training, validation, and testing
     fold = 0  # fold index for cross-validation, for reproducibility purpose
@@ -149,7 +141,7 @@ def main(r, ws, args):
         beta=args.beta,
         ref_prior=args.ref_pc,
         variational=args.variational,
-        trained_model=files.trained,
+        trained_model=files["trained"],
         n_pr=args.n_pr,
         mode=args.loss_mode,
     )
