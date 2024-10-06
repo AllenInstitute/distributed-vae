@@ -466,7 +466,7 @@ class cpl_mixVAE:
 
                 _time = time.time() - t0
                 print(
-                    f"E{e} | loss {losses[-1]} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
+                    f"epoch {e} | loss: {losses[-1]:.2f} | rec {loss_recs[0][-1]:.2f} | joint {loss_joints[-1]} | entropy {c_ents[-1]:.2f} | distance {c_dists[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
                     end="",
                 )
 
