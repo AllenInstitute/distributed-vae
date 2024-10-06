@@ -12,4 +12,4 @@ source ~/.bashrc
 
 mamba activate mdist-mmidas
 
-python train.py --n_arm 2 --use-wandb --gpus 1 --n_epoch 100000
+python train.py --n_arm 2 --use-wandb --gpus 1 --n_epoch 500000

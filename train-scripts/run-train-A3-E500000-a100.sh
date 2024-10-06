@@ -6,10 +6,10 @@
 #SBATCH -p celltypes
 #SBATCH -o mmidas-logs/mmidas_%j.out
 #SBATCH -e mmidas-logs/mmidas_%j.err
-#SBATCH --time=72:00:00
+#SBATCH --time=48:00:00
 
 source ~/.bashrc
 
 mamba activate mdist-mmidas
 
-python train.py --n_arm 5 --use-wandb --gpus 1 --n_epoch 200000
+python train.py --n_arm 3 --use-wandb --gpus 1 --n_epoch 500000
