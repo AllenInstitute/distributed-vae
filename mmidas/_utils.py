@@ -42,7 +42,7 @@ def compute_confmat(labels1, labels2, K=None):
     assert labels1.dtype == labels2.dtype == np.int64
     if K is None:
         K = max(len(np.unique(labels1)), len(np.unique(labels2)))
-    matrix = np.zeros((K, K), dtype=int)
+    matrix = np.zeros((K, K))
     np.add.at(matrix, (labels1, labels2), 1)
     return matrix
 
@@ -50,7 +50,7 @@ def compute_confmat(labels1, labels2, K=None):
 def confmat_normalize(cm):
     # algebra: this is an evaluation/reduction operation
     maxes = np.maximum(np.sum(cm, axis=0), np.sum(cm, axis=1))
-    return np.divide(cm, maxes)
+    return np.divide(cm, maxes[:, None], out=np.zeros_like(cm), where=maxes[:, None] != 0)
 
 
 def confmat_mean(cm):

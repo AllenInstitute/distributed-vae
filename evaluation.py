@@ -84,26 +84,26 @@ def parse_toml(tf: str, sf: str) -> Mapping[str, Any]:
     'saving': _saving,
     'trained': _trained,
   }
-  return update_key(pmap(mapv(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_before_**', 'pat')
+  return update_key(pmap(mapv(str, _fs.items())), 'saving', lambda x: x + '/model/cpl_mixVAE_model_**', 'pat')
 
 def lookup(ks, dct):
   return [dct[k] for k in ks]
 
 def main():
   SEED = 546
-  TOML = 'pyproject.toml'
+  TOML = 'mmidas.toml'
   SUB = 'mouse_smartseq'
   B = 5000
   DATA = 'log1p'
   TARGETS = 'c_onehot'
   CFG = pmap({
-    'arms': 5,
+    'arms': 3,
     'C': 92,
     'state_dim': 2,
     'latent_dim': 10,
   })
   RUN = 2
-  EPOCHS = 200000
+  EPOCHS = 500000
   
   config = parse_toml(TOML, SUB)
   data, targets = lookup([DATA, TARGETS], load_data(config.data))

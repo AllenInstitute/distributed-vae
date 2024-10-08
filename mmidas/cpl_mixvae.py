@@ -599,7 +599,7 @@ class cpl_mixVAE:
                         }
                     )
 
-                if self.save and (e > 0) and (e % 10000 == 0):
+                if self.save and (e > 0) and (e % 5 == 0):
                     trained_model = (
                         self.folder + f"/model/cpl_mixVAE_model_epoch_{e}.pth"
                     )
@@ -668,9 +668,8 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
-
-                        if consensuss[-1] >= good_enuf_consensus:
-                            break
+                if consensuss[-1] >= good_enuf_consensus:
+                    break
 
                 epoch_times.append(time.time() - t0)
 
