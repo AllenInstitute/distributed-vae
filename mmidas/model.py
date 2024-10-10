@@ -9,6 +9,11 @@ import numpy as np
 from mmidas._utils import unstable, mk_masks, to_np
 
 
+# TODO
+def clr(prob, eps=1e-8):
+    assert th.all((0 <= prob) & (prob <= 1)) and th.sum(prob, dim=-1) == 1.
+
+
 @unstable
 def generate(f: nn.Module, dl: DataLoader) -> Mapping[str, Any]:
     A = f.n_arm

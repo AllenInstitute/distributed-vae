@@ -35,6 +35,8 @@ from .utils.data_tools import split_data_Kfold
 
 from mmidas._utils import to_np, compute_labels, compute_confmat, confmat_mean, confmat_normalize
 
+# last run: 35 (so start at 36)
+
 
 def bytes_to_mb(x):
     return x / 1e6
@@ -178,6 +180,11 @@ class cpl_mixVAE:
             self.aug_model, self.aug_param, self.netA = None, None, None
 
 
+# [[0.7, 0.2, 0.1], [0.5, 0.4, 0.1], [0.3, 0.3, 0.4]]
+# -> [[1, 0, 0], [1, 0, 0], [0, 0, 1]]
+# -> [0, 0, 2]
+# -> [0.67, 0, 0.33]
+
     def init_model(
         self,
         n_categories,
@@ -308,7 +315,6 @@ class cpl_mixVAE:
 
         self.current_time = time.strftime("%Y-%m-%d-%H-%M-%S")
 
-    # TODO: add stopping criteria for training
     def train(
         self,
         train_loader,
@@ -476,10 +482,9 @@ class cpl_mixVAE:
                     for b in range(a + 1, A):
                         consensus.append(confmat_mean(confmat_normalize(compute_confmat(labels[a], labels[b], C))))
                 consensuss.append(np.mean(np.array(consensus)))
-
                 _time = time.time() - t0
                 print(
-                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | consensus: {consensuss[-1]:.2f} | time {_time:.2f} | mem {mem:.2f} | ",
+                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | consensus: {consensuss[-1]:.2f} | time: {_time:.2f} | avg time: {np.mean(epoch_times):.2f} | mem: {mem:.2f}  | ",
                     end="",
                 )
 
@@ -586,6 +591,8 @@ class cpl_mixVAE:
                         for a in range(A):
                             val_loss_rec += loss_rec[a].item() / D
 
+                # search finds list of actions. that's sequence transduction
+
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
                 print(
@@ -599,7 +606,7 @@ class cpl_mixVAE:
                         }
                     )
 
-                if self.save and (e > 0) and (e % 5 == 0):
+                if self.save and (e > 0) and (e % 10000 == 0):
                     trained_model = (
                         self.folder + f"/model/cpl_mixVAE_model_epoch_{e}.pth"
                     )
@@ -611,7 +618,6 @@ class cpl_mixVAE:
                         },
                         trained_model,
                     )
-
                     predicted_label = np.zeros((A, len(cs_train[0] * B)))
                     for a in range(A):
                         predicted_label[a] = np.concatenate(cs_train[a])
@@ -661,7 +667,7 @@ class cpl_mixVAE:
                                 + "/consensus_arm_"
                                 + str(a)
                                 + "_arm_"
-                                + str(a)
+                                + str(b)
                                 + "_epoch_"
                                 + str(e)
                                 + ".png",
@@ -672,8 +678,6 @@ class cpl_mixVAE:
                     break
 
                 epoch_times.append(time.time() - t0)
-
-            print("epoch time:", np.mean(epoch_times))
 
             def save_loss_plot(loss_data, label, filename):
                 fig, ax = plt.subplots()
