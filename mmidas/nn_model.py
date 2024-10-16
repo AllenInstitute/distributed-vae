@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 from typing import Optional, List, Iterable, Sequence, assert_never
 
 import numpy as np
@@ -76,7 +77,12 @@ def neg_joint_entropy(
 
 
 def inv_var(p: th.Tensor, eps: float) -> th.Tensor:
-    return (1 / (p.var(0) + eps)).repeat(p.size(0), 1).sqrt()
+    if p.dim() == 2:
+        return (1 / (p.var(0) + eps)).repeat(p.shape[0], 1).sqrt()
+    elif p.dim() == 3:
+        var = p.var(dim=1, keepdim=True)  # Compute variance across the second dimension
+        return (1 / (var + eps)).sqrt()  # No need to repeat, as the shape is already 2x1x784
+
 
 
 def avg[T](x: Sequence[T]) -> T:
@@ -257,6 +263,7 @@ class mixVAE_model(nn.Module):
         self.c_var = [None] * 2
 
     def encoder(self, x, arm):
+        print(x.shape)
         x = self.batch_l1[arm](F.relu(self.fc1[arm](self.x_dp(x))))
         x = self.batch_l2[arm](F.relu(self.fc2[arm](x)))
         x = self.batch_l3[arm](F.relu(self.fc3[arm](x)))
@@ -310,6 +317,7 @@ class mixVAE_model(nn.Module):
         """
         assert not self.loss_mode == "ZINB", "ZINB not implemented"
         assert self.varitional, "Non-variational not implemented"
+        assert len(x) == self.n_arm
 
         C = self.n_categories
 
@@ -512,6 +520,7 @@ class mixVAE_model(nn.Module):
              loglikelihood: list of log-likelihood values for all arms
 
         """
+        assert len(recon_x) == len(c) == self.n_arm
         A = self.n_arm
         C = self.n_categories
         B = x[0].size(0)
@@ -591,57 +600,49 @@ class mixVAE_model(nn.Module):
             lls,
         )
     
-    def loss_vectorized(self, x_recs, p_x, r_x, xs, s_means, s_logvars, c, c_smps):
-        assert len(x_recs) == len(xs) == len(s_means) == len(s_logvars) == len(c_smps) == self.n_arm
+    def loss_naive(self, cs): # cs: (A, B, K)
         assert not self.ref_prior
-
-        A = self.n_arm
-        K = self.n_categories
-        (B, _) = xs[0].shape
-
-        lls = []
-        loss_recs = []
-        loss_inds = []
-        kl_ss = []
-        c_ents = []
-        c_l2_dists = []
+        assert len(cs) == self.n_arm
         c_dists = []
-        for (a, (x, x_rec, s_mean, s_logvar, c_a, c_smp_a)) in enumerate(zip(xs, x_recs, s_means, s_logvars, c, c_smps)):
-            ll = F.mse_loss(x_rec, x, reduction="mean") + B * np.log(2 * np.pi)
-
-            if self.loss_mode == "MSE":
-                loss_rec = (0.5 * F.mse_loss(x_rec, x, reduction="sum") / B) + (0.5 * F.binary_cross_entropy(binarize(x_rec, 0.1), binarize(x, 0.1)))
-            elif self.loss_mode == "ZINB":
-                print("warning: ZINB is unstable")
-                loss_rec = zinb_loss(x_rec, p_x[a], r_x[a], x)
-            else:
-                assert_never(self.loss_mode)
-
-            if self.varitional:
-                kl_s = kl(s_mean, s_logvar)
-            else:
-                kl_s = [0.0]
-
-            loss_ind = loss_rec + self.beta * kl_s
-
-            lls.append(ll)
-            loss_recs.append(loss_rec)
-            kl_ss.append(kl_s)
-            loss_inds.append(loss_ind)
-
+        for a, c_a in enumerate(cs):
             logc_a = th.log(c_a + self.eps)
             inv_var_c_a = inv_var(c_a, self.eps)
-            for (c_b, c_smp_b) in zip(c[a + 1:], c_smps[a + 1:]):
+
+            for c_b in cs[a + 1 :]:
                 logc_b = th.log(c_b + self.eps)
                 inv_var_c_b = inv_var(c_b, self.eps)
 
-                c_ents.append(neg_joint_entropy((c_a, logc_a), (c_b, logc_b)))
-                c_l2_dists.append(l2_dist(c_smp_a, c_smp_b).mean())
-                c_dists.append(simplex_dist((logc_a, inv_var_c_a), (logc_b, inv_var_c_b)).mean())
+                c_dists.append(
+                    simplex_dist((logc_a, inv_var_c_a), (logc_b, inv_var_c_b)).mean()
+                )
+        return sum(c_dists) / len(c_dists)
 
-        sum_c_dists = sum(c_dists)
-        sum_c_ents = sum(c_ents)
-        loss_joints = self.lam * sum_c_dists + sum_c_ents + arm_combs(A) * ((K / 2) * (np.log(2 * np.pi)) - 0.5 * np.log(2 * self.lam))
+    def loss_vectorize(self, cs: th.Tensor) -> th.Tensor:
+        assert not self.ref_prior
+        assert len(cs) == self.n_arm
+        (A, B, K) = cs.shape
+        prec = th.log(cs + self.eps) * inv_var(cs, self.eps)  # shape: (A, B, K)
+
+        diff = prec[:, None, :, :] - prec[None, :, :, :]  # shape: (A, A, B, K)
+        sq_diff = diff.pow(2).sum(dim=-1)  # shape: (A, A, B)
+        mean_sq_diff = sq_diff.mean(dim=-1)  # shape: (A, A)
+        triu_indices = th.triu_indices(A, A, offset=1)
+        dists = mean_sq_diff[triu_indices[0], triu_indices[1]]  # Shape: A*(A-1)/2
+        return dists.mean()
+
+    
+    # def loss_vectorize(self, cs: th.Tensor) -> th.Tensor:
+    #     assert not self.ref_prior
+    #     assert len(cs) == self.n_arm
+    #     (A, B, K) = cs.shape
+    #     prec = th.log(cs + self.eps) * inv_var(cs, self.eps) # (A, B, K)
+    #     dists = []
+    #     for a in range(A):
+    #         for b in range(a + 1, A):
+    #             dists.append(th.norm(prec[a] - prec[b], p=2, dim=-1).pow(2).mean())
+    #     return sum(dists) / len(dists)
+
+
 
 
 
@@ -681,3 +682,47 @@ def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
     l_zinb = (loss_zero_counts + loss_nonzero_counts).mean()
 
     return l_zinb
+
+def mk_vae(
+    C,
+    state_dim,
+    input_dim,
+    device,
+    eps=1e-8,
+    fc_dim=100,
+    latent_dim=10,
+    x_drop=0.5,
+    s_drop=0.2,
+    lr=0.001,
+    lam=1,
+    lam_pc=1,
+    A=2,
+    tau=0.005,
+    beta=1.0,
+    hard=False,
+    variational=True,
+    ref_prior=False,
+    momentum=0.01,
+    mode="MSE",
+) -> nn.Module:
+    return mixVAE_model(
+        input_dim=input_dim,
+        fc_dim=fc_dim,
+        n_categories=C,
+        state_dim=state_dim,
+        lowD_dim=latent_dim,
+        x_drop=x_drop,
+        s_drop=s_drop,
+        n_arm=A,
+        lam=lam,
+        lam_pc=lam_pc,
+        tau=tau,
+        beta=beta,
+        hard=hard,
+        variational=variational,
+        device=device,
+        eps=eps,
+        ref_prior=ref_prior,
+        momentum=momentum,
+        loss_mode=mode,
+    ).to(device)
