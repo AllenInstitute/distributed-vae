@@ -103,3 +103,12 @@ def confmat_mean(cm):
 def ecdf(labels):
     assert len(labels.shape) == 1
     return np.bincount(labels) / len(labels)
+
+def noExt(text):
+    return ''.join(text.split('.')[:-1])
+
+def parse_epoch(s: str):
+  try:
+    return int(noExt(s).split('_epoch_')[-1])
+  except:
+    return s

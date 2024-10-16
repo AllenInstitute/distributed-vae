@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Literal, Sequence
+from typing import Optional, List, Iterable, Sequence, assert_never
 
 import numpy as np
 import torch
@@ -9,6 +9,10 @@ from torch.nn import ModuleList as mdl
 from torch.autograd import Variable
 from torch.nn import functional as F
 
+
+# 2 arm: 0, 5, 6
+# 3 arm: 0, 1, 3, 4 (need to find correct run for 0, 1)
+# 5 arm: 1, 3, 4, 5
 
 @dataclass
 class VAEConfig:
@@ -77,9 +81,6 @@ def inv_var(p: th.Tensor, eps: float) -> th.Tensor:
 
 def avg[T](x: Sequence[T]) -> T:
     return sum(x) / len(x)
-
-
-Loss = Literal["MSE", "ZINB"]
 
 
 class mixVAE_model(nn.Module):
@@ -589,6 +590,60 @@ class mixVAE_model(nn.Module):
             [],
             lls,
         )
+    
+    def loss_vectorized(self, x_recs, p_x, r_x, xs, s_means, s_logvars, c, c_smps):
+        assert len(x_recs) == len(xs) == len(s_means) == len(s_logvars) == len(c_smps) == self.n_arm
+        assert not self.ref_prior
+
+        A = self.n_arm
+        K = self.n_categories
+        (B, _) = xs[0].shape
+
+        lls = []
+        loss_recs = []
+        loss_inds = []
+        kl_ss = []
+        c_ents = []
+        c_l2_dists = []
+        c_dists = []
+        for (a, (x, x_rec, s_mean, s_logvar, c_a, c_smp_a)) in enumerate(zip(xs, x_recs, s_means, s_logvars, c, c_smps)):
+            ll = F.mse_loss(x_rec, x, reduction="mean") + B * np.log(2 * np.pi)
+
+            if self.loss_mode == "MSE":
+                loss_rec = (0.5 * F.mse_loss(x_rec, x, reduction="sum") / B) + (0.5 * F.binary_cross_entropy(binarize(x_rec, 0.1), binarize(x, 0.1)))
+            elif self.loss_mode == "ZINB":
+                print("warning: ZINB is unstable")
+                loss_rec = zinb_loss(x_rec, p_x[a], r_x[a], x)
+            else:
+                assert_never(self.loss_mode)
+
+            if self.varitional:
+                kl_s = kl(s_mean, s_logvar)
+            else:
+                kl_s = [0.0]
+
+            loss_ind = loss_rec + self.beta * kl_s
+
+            lls.append(ll)
+            loss_recs.append(loss_rec)
+            kl_ss.append(kl_s)
+            loss_inds.append(loss_ind)
+
+            logc_a = th.log(c_a + self.eps)
+            inv_var_c_a = inv_var(c_a, self.eps)
+            for (c_b, c_smp_b) in zip(c[a + 1:], c_smps[a + 1:]):
+                logc_b = th.log(c_b + self.eps)
+                inv_var_c_b = inv_var(c_b, self.eps)
+
+                c_ents.append(neg_joint_entropy((c_a, logc_a), (c_b, logc_b)))
+                c_l2_dists.append(l2_dist(c_smp_a, c_smp_b).mean())
+                c_dists.append(simplex_dist((logc_a, inv_var_c_a), (logc_b, inv_var_c_b)).mean())
+
+        sum_c_dists = sum(c_dists)
+        sum_c_ents = sum(c_ents)
+        loss_joints = self.lam * sum_c_dists + sum_c_ents + arm_combs(A) * ((K / 2) * (np.log(2 * np.pi)) - 0.5 * np.log(2 * self.lam))
+
+
 
 
 def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):

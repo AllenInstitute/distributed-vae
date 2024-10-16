@@ -33,7 +33,13 @@ from .augmentation.udagan import *
 from .nn_model import mixVAE_model, VAEConfig
 from .utils.data_tools import split_data_Kfold
 
-from mmidas._utils import to_np, compute_labels, compute_confmat, confmat_mean, confmat_normalize
+from mmidas._utils import (
+    to_np,
+    compute_labels,
+    compute_confmat,
+    confmat_mean,
+    confmat_normalize,
+)
 
 # last run: 35 (so start at 36)
 
@@ -49,6 +55,7 @@ def is_master(rank):
 def compose(*fs):
     def compose2(f, g):
         return lambda *a, **kw: f(g(*a, **kw))
+
     return reduce(compose2, fs)
 
 
@@ -148,7 +155,7 @@ class cpl_mixVAE:
         self,
         saving_folder="",
         aug_file="",
-        device = None,
+        device=None,
         eps=1e-8,
         save_flag=True,
         load_weights=True,
@@ -179,11 +186,10 @@ class cpl_mixVAE:
         else:
             self.aug_model, self.aug_param, self.netA = None, None, None
 
-
-# [[0.7, 0.2, 0.1], [0.5, 0.4, 0.1], [0.3, 0.3, 0.4]]
-# -> [[1, 0, 0], [1, 0, 0], [0, 0, 1]]
-# -> [0, 0, 2]
-# -> [0.67, 0, 0.33]
+    # [[0.7, 0.2, 0.1], [0.5, 0.4, 0.1], [0.3, 0.3, 0.4]]
+    # -> [[1, 0, 0], [1, 0, 0], [0, 0, 1]]
+    # -> [0, 0, 2]
+    # -> [0.67, 0, 0.33]
 
     def init_model(
         self,
@@ -328,7 +334,7 @@ class cpl_mixVAE:
         rank=None,
         run=None,
         ws=1,
-        good_enuf_consensus=0.8
+        good_enuf_consensus=0.8,
     ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -382,7 +388,7 @@ class cpl_mixVAE:
         f6_mask = th.ones((D_low, S + C))
 
         bias_mask = bias_mask.to(rank)
-        weight_mask = weight_mask.to(rank)
+        weight_mask = weight_mask.to(rank)% 10
         fc_mu = fc_mu.to(rank)
         fc_sigma = fc_sigma.to(rank)
         f6_mask = f6_mask.to(rank)
@@ -403,7 +409,7 @@ class cpl_mixVAE:
                 probs = [[] for _ in range(A)]
 
                 self.model.train()
-                for (x, n) in train_loader:
+                for x, n in train_loader:
                     x = x.to(rank)
                     n = n.to(int)
 
@@ -476,11 +482,19 @@ class cpl_mixVAE:
                 for a in range(A):
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
-                labels = [np.ravel(compute_labels(np.array(probs[a]))) for a in range(A)]
+                labels = [
+                    np.ravel(compute_labels(np.array(probs[a]))) for a in range(A)
+                ]
                 consensus = []
                 for a in range(A):
                     for b in range(a + 1, A):
-                        consensus.append(confmat_mean(confmat_normalize(compute_confmat(labels[a], labels[b], C))))
+                        consensus.append(
+                            confmat_mean(
+                                confmat_normalize(
+                                    compute_confmat(labels[a], labels[b], C)
+                                )
+                            )
+                        )
                 consensuss.append(np.mean(np.array(consensus)))
                 _time = time.time() - t0
                 print(
@@ -661,7 +675,7 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|=" + str(C), fontsize=20)
+                            plt.title(f"Epoch {e} |c|={C} (avg = {consensuss[-1]})", fontsize=20)
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -697,10 +711,10 @@ class cpl_mixVAE:
 
             if self.save and n_epoch > 0:
                 # Save train loss plot
-                save_loss_plot(losses, "Training", "train_loss_curve")
+                # save_loss_plot(losses, "Training", "train_loss_curve")
 
                 # Save validation loss plot
-                save_loss_plot(validation_loss, "Validation", "validation_loss_curve")
+                # save_loss_plot(validation_loss, "Validation", "validation_loss_curve")
 
                 trained_model = (
                     self.folder
