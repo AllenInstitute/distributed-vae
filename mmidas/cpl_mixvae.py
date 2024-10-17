@@ -334,7 +334,7 @@ class cpl_mixVAE:
         rank=None,
         run=None,
         ws=1,
-        good_enuf_consensus=0.8,
+        good_enuf_consensus=0.9,
     ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -709,7 +709,7 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
-                if consensus_val[-1] >= good_enuf_consensus:
+                if consensus_train[-1] >= good_enuf_consensus:
                     break
 
                 epoch_times.append(time.time() - t0)

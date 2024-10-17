@@ -5,10 +5,10 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from mmidas.model import generate
-
-
 def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[str, Any]:
+    from mmidas.model import generate
+
+
     C = fa.n_categories
     outs_a = generate(fa, dl)
     outs_b = generate(fb, dl)

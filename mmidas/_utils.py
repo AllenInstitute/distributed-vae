@@ -12,8 +12,6 @@ from scipy.optimize import linear_sum_assignment
 from mmidas.utils.dataloader import load_data, get_loaders
 from mmidas.utils.tools import get_paths
 from mmidas._evals import evals2
-from mmidas.model import load_vae
-
 # types: labels, probs, confmat
 
 
@@ -113,6 +111,9 @@ def confmat_mean(cm):
 
 
 def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
+    from mmidas.model import load_vae
+
+
     dataset = "mouse_smartseq"
     config = get_paths("mmidas.toml", dataset)
     data = load_data(config[dataset]["data_path"] / config[dataset]["anndata_file"])
