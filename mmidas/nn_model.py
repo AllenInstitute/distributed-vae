@@ -263,7 +263,6 @@ class mixVAE_model(nn.Module):
         self.c_var = [None] * 2
 
     def encoder(self, x, arm):
-        print(x.shape)
         x = self.batch_l1[arm](F.relu(self.fc1[arm](self.x_dp(x))))
         x = self.batch_l2[arm](F.relu(self.fc2[arm](x)))
         x = self.batch_l3[arm](F.relu(self.fc3[arm](x)))

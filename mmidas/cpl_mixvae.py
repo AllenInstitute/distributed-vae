@@ -377,7 +377,8 @@ class cpl_mixVAE:
         c_ents = []
         c_l2_dists = []
         c_dists = []
-        consensuss = []
+        consensus_train = []
+        consensus_val = []
 
         validation_loss = np.zeros(E)
         validation_rec_loss = np.zeros(E)
@@ -406,7 +407,8 @@ class cpl_mixVAE:
                 t0 = time.time()
                 cs_train = [[] for _ in range(A)]
 
-                probs = [[] for _ in range(A)]
+                probs_train = [[] for _ in range(A)]
+                probs_test = [[] for _ in range(A)]
 
                 self.model.train()
                 for x, n in train_loader:
@@ -466,7 +468,7 @@ class cpl_mixVAE:
                     c_ent += _c_ent
                     loss_rec += _loss_rec / D
                     for a in range(A):
-                        probs[a].append(to_np(cs[a]))
+                        probs_train[a].append(to_np(cs[a]))
 
                 if ws > 1:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
@@ -483,7 +485,7 @@ class cpl_mixVAE:
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
                 labels = [
-                    np.ravel(compute_labels(np.array(probs[a]))) for a in range(A)
+                    np.ravel(compute_labels(np.array(probs_train[a]))) for a in range(A)
                 ]
                 consensus = []
                 for a in range(A):
@@ -495,10 +497,10 @@ class cpl_mixVAE:
                                 )
                             )
                         )
-                consensuss.append(np.mean(np.array(consensus)))
+                consensus_train.append(np.mean(np.array(consensus)))
                 _time = time.time() - t0
                 print(
-                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | consensus: {consensuss[-1]:.2f} | time: {_time:.2f} | avg time: {np.mean(epoch_times):.2f} | mem: {mem:.2f}  | ",
+                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | train-cns: {consensus_train[-1]:.2f} | time: {_time:.2f} | avg time: {np.mean(epoch_times):.2f} | mem: {mem:.2f}  | ",
                     end="",
                 )
 
@@ -512,7 +514,7 @@ class cpl_mixVAE:
                             "train/l2-distance": c_l2_dists[-1],
                             "train/time": _time,
                             "train/mem": mem,
-                            "train/consensus": consensuss[-1],
+                            "train/consensus": consensus_train[-1],
                             **dict(
                                 map(
                                     lambda a: (f"train/rec-loss{a}", loss_recs[a][-1]),
@@ -578,6 +580,8 @@ class cpl_mixVAE:
                             val_loss += loss.data.item()
                             for a in range(A):
                                 val_loss_rec += loss_rec[a].item() / D
+                                probs_test[a].append(to_np(cs[a]))
+                                
                     else:
                         batch_indx = 0
                         x, n = test_loader.dataset.tensors
@@ -604,19 +608,36 @@ class cpl_mixVAE:
                         val_loss = loss.item()
                         for a in range(A):
                             val_loss_rec += loss_rec[a].item() / D
+                            probs_test[a].append(to_np(cs[a]))
 
+                        
+                labels = [
+                    np.ravel(compute_labels(np.array(probs_test[a]))) for a in range(A)
+                ]
+                consensus = []
+                for a in range(A):
+                    for b in range(a + 1, A):
+                        consensus.append(
+                            confmat_mean(
+                                confmat_normalize(
+                                    compute_confmat(labels[a], labels[b], C)
+                                )
+                            )
+                        )
+                consensus_val.append(np.mean(np.array(consensus)))
                 # search finds list of actions. that's sequence transduction
 
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
                 print(
-                    f"val-loss {validation_loss[e]:.2f} | rec-loss {validation_rec_loss[e]:.2f}"
+                    f"val-loss {validation_loss[e]:.2f} | rec-loss {validation_rec_loss[e]:.2f} | val-cns {consensus_val[-1]:.2f}"
                 )
                 if run:
                     run.log(
                         {
                             "val/total-loss": validation_loss[e],
                             "val/rec-loss": validation_rec_loss[e],
+                            "val/consensus": consensus_val[-1],
                         }
                     )
 
@@ -675,7 +696,7 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensuss[-1]})", fontsize=20)
+                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_val[-1]:.2f})", fontsize=20)
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -688,7 +709,7 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
-                if consensuss[-1] >= good_enuf_consensus:
+                if consensus_val[-1] >= good_enuf_consensus:
                     break
 
                 epoch_times.append(time.time() - t0)
@@ -730,33 +751,33 @@ class cpl_mixVAE:
                     },
                     trained_model,
                 )
-                bias = self.model.fcc[0].bias.detach().cpu().numpy()
-                mask = range(len(bias))
-                prune_indx = []
-                # plot the learning curve of the network
-                fig, ax = plt.subplots()
-                ax.plot(range(E), losses, label="Training")
-                ax.plot(range(E), validation_loss, label="Validation")
-                ax.set_xlabel("# epoch", fontsize=16)
-                ax.set_ylabel("loss value", fontsize=16)
-                ax.set_title(
-                    "Learning curve of the cpl-mixVAE for K="
-                    + str(C)
-                    + " and S="
-                    + str(S)
-                )
-                ax.spines["right"].set_visible(False)
-                ax.spines["top"].set_visible(False)
-                ax.legend()
-                ax.figure.savefig(
-                    self.folder
-                    + f"/model/learning_curve_before_pruning_K_A{A}_"
-                    + str(C)
-                    + "_"
-                    + self.current_time
-                    + ".png"
-                )
-                plt.close("all")
+                # bias = self.model.fcc[0].bias.detach().cpu().numpy()
+                # mask = range(len(bias))
+                # prune_indx = []
+                # # plot the learning curve of the network
+                # fig, ax = plt.subplots()
+                # ax.plot(range(E), losses, label="Training")
+                # ax.plot(range(E), validation_loss, label="Validation")
+                # ax.set_xlabel("# epoch", fontsize=16)
+                # ax.set_ylabel("loss value", fontsize=16)
+                # ax.set_title(
+                #     "Learning curve of the cpl-mixVAE for K="
+                #     + str(C)
+                #     + " and S="
+                #     + str(S)
+                # )
+                # ax.spines["right"].set_visible(False)
+                # ax.spines["top"].set_visible(False)
+                # ax.legend()
+                # ax.figure.savefig(
+                #     self.folder
+                #     + f"/model/learning_curve_before_pruning_K_A{A}_"
+                #     + str(C)
+                #     + "_"
+                #     + self.current_time
+                #     + ".png"
+                # )
+                # plt.close("all")
 
         if n_epoch_p > 0:
             # initialized pruning parameters of the layer of the discrete variable
