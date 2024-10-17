@@ -334,7 +334,7 @@ class cpl_mixVAE:
         rank=None,
         run=None,
         ws=1,
-        good_enuf_consensus=0.8,
+        good_enuf_consensus=0.85,
     ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
@@ -710,6 +710,20 @@ class cpl_mixVAE:
                             )
                             plt.close("all")
                 if consensus_train[-1] >= good_enuf_consensus:
+                    trained_model = (
+                        self.folder
+                        + f"/model/cpl_mixVAE_model_before_pruning_A{A}_"
+                        + self.current_time
+                        + ".pth"
+                    )
+                    print(f"saving model to: {trained_model}")
+                    th.save(
+                        {
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                        },
+                        trained_model,
+                    )
                     break
 
                 epoch_times.append(time.time() - t0)
@@ -983,7 +997,7 @@ class cpl_mixVAE:
                                 _, gen_data = self.netA(data, noise, True, self.device)
                                 # if self.aug_param['n_zim'] > 1:
                                 #     data_bin = 0. * data
-                                #     data_bin[data > self.eps] = 1.
+                                #     data_bin[data > self.eps] = 1.f
                                 #     fake_data = gen_data[:, :self.aug_param['n_features']] * data_bin
                                 #     trans_data.append(fake_data)
                                 # else:

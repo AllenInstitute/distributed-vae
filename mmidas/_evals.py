@@ -7,9 +7,11 @@ from tqdm import tqdm
 
 def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[str, Any]:
     from mmidas.model import generate
-
+    from mmidas._utils import confmat_mean, confmat_normalize, compute_confmat
 
     C = fa.n_categories
+    K = C
+    A = fa.n_arm
     outs_a = generate(fa, dl)
     outs_b = generate(fb, dl)
 
@@ -171,8 +173,17 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
             emp_l2_b.append(_emp_l2[inds_unpruned][:, inds_unpruned])
             emp_log_b.append(_emp_log[inds_unpruned][:, inds_unpruned])
 
+
+    consensus_vec = []
+    for a in range(A):
+        for b in range(a + 1, A):
+            labels_a = preds_a[a].astype(int) - 1
+            labels_b = preds_a[b].astype(int) - 1
+            consensus_vec.append(confmat_mean(confmat_normalize(compute_confmat(labels_a, labels_b, K))))
+
     return {
         "consensus": consensus,
+        "consensus_vec": consensus_vec,
         "consensus_min": consensus_min,
         "consensus_mean": consensus_mean,
         "pm": pm,
