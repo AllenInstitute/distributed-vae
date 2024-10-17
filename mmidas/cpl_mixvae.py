@@ -334,7 +334,7 @@ class cpl_mixVAE:
         rank=None,
         run=None,
         ws=1,
-        good_enuf_consensus=0.9,
+        good_enuf_consensus=0.8,
     ):
         """
         run the training of the cpl-mixVAE with the pre-defined parameters/settings
