@@ -408,6 +408,7 @@ class cpl_mixVAE:
                 cs_train = [[] for _ in range(A)]
 
                 probs_train = [[] for _ in range(A)]
+                probs_noaug = [[] for _ in range(A)]
                 probs_test = [[] for _ in range(A)]
 
                 self.model.train()
@@ -460,6 +461,12 @@ class cpl_mixVAE:
                     _loss.backward()
                     self.optimizer.step()
 
+                    with th.no_grad():
+                        xs_noaug = x.expand(A, -1, -1)
+                        _, _, _, _, cs_noaug, _, _, _, _, _ = self.model(
+                            xs_noaug, self.temp, prior_c
+                        )
+
                     loss[0] += _loss.item()
                     loss[1] += 1
                     loss_joint += _loss_joint
@@ -469,6 +476,8 @@ class cpl_mixVAE:
                     loss_rec += _loss_rec / D
                     for a in range(A):
                         probs_train[a].append(to_np(cs[a]))
+                        probs_noaug[a].append(to_np(cs_noaug[a]))
+
 
                 if ws > 1:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
@@ -485,7 +494,7 @@ class cpl_mixVAE:
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
                 labels = [
-                    np.ravel(compute_labels(np.array(probs_train[a]))) for a in range(A)
+                    np.ravel(compute_labels(np.array(probs_noaug[a]))) for a in range(A)
                 ]
                 consensus = []
                 for a in range(A):
@@ -709,7 +718,7 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
-                if consensus_train[-1] >= good_enuf_consensus:
+                if consensus_train[-1] >= good_enuf_consensus or e == E - 1:
                     trained_model = (
                         self.folder
                         + f"/model/cns_cpl_mixVAE_model_before_pruning_A{A}_"
