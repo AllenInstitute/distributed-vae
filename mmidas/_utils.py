@@ -113,12 +113,15 @@ def confmat_mean(cm):
 def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
     from mmidas.model import load_vae
 
+    SEED = 546
 
     dataset = "mouse_smartseq"
     config = get_paths("mmidas.toml", dataset)
     data = load_data(config[dataset]["data_path"] / config[dataset]["anndata_file"])
-    _, _, all_loader = get_loaders(dataset=data["log1p"], batch_size=5000, seed=546)
+    train_loader, val_loader, all_loader = get_loaders(dataset=data["log1p"], batch_size=5000, seed=SEED)
     vaes = {r: load_vae(A, r, epochs, data["log1p"].shape[1]) for r in runs}
+
+    loader = val_loader
 
     css = {}
     stds = {}
@@ -134,13 +137,13 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
     for (j, ra) in enumerate(runs):
         for rb in runs[j + 1:]:
             if ra != rb:
-                ev = evals2(vaes[ra], vaes[rb], all_loader)
+                ev = evals2(vaes[ra], vaes[rb], loader)
                 i = 0
                 for a in range(A):
                     for b in range(A):
                         avg_css = np.mean(np.diag(reassign(ev["consensus"][i])))
                         avg_l2 = np.mean(np.diag(reassign(ev["dist_l2"][i])))
-                        avg_log = np.mean(np.diag(reassign(ev["dist_log"][i])))
+                        # avg_log = np.mean(np.diag(reassign(ev["dist_log"][i])))
                         if (ra, rb) not in css:
                             css[(ra, rb)] = []
                             stds[(ra, rb)] = []
@@ -153,28 +156,28 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
                             means_log[(ra, rb)] = []
                         css[(ra, rb)].append(avg_css)
                         l2s[(ra, rb)].append(avg_l2)
-                        logs[(ra, rb)].append(avg_log)
+                        # logs[(ra, rb)].append(avg_log)
                         i += 1
                 css[(ra, rb)] = np.array(css[(ra, rb)])
                 l2s[(ra, rb)] = np.array(l2s[(ra, rb)])
-                logs[(ra, rb)] = np.array(logs[(ra, rb)])
+                # logs[(ra, rb)] = np.array(logs[(ra, rb)])
 
                 means[(ra, rb)] = np.mean(css[(ra, rb)])
                 stds[(ra, rb)] = np.std(css[(ra, rb)].flatten())
                 means_l2[(ra, rb)] = np.mean(l2s[(ra, rb)])
                 stds_l2[(ra, rb)] = np.std(l2s[(ra, rb)].flatten())
-                means_log[(ra, rb)] = np.mean(logs[(ra, rb)])
-                stds_log[(ra, rb)] = np.std(logs[(ra, rb)].flatten())
+                # means_log[(ra, rb)] = np.mean(logs[(ra, rb)])
+                # stds_log[(ra, rb)] = np.std(logs[(ra, rb)].flatten())
 
     for r in runs:
-        ev = evals2(vaes[r], vaes[r], all_loader)
+        ev = evals2(vaes[r], vaes[r], loader)
         i = 0
         for a in range(A):
             for b in range(A):
                 if b > a:
                     avg_css = np.mean(np.diag(reassign(ev["consensus"][i])))
                     avg_l2 = np.mean(np.diag(reassign(ev["dist_l2"][i])))
-                    avg_log = np.mean(np.diag(reassign(ev["dist_log"][i])))
+                    # avg_log = np.mean(np.diag(reassign(ev["dist_log"][i])))
                     if (r, r) not in css:
                         css[(r, r)] = []
                         stds[(r, r)] = []
@@ -187,18 +190,18 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
                         means_log[(r, r)] = []
                     css[(r, r)].append(avg_css)
                     l2s[(r, r)].append(avg_l2)
-                    logs[(r, r)].append(avg_log)
+                    # logs[(r, r)].append(avg_log)
                 i += 1
         css[(r, r)] = np.array(css[(r, r)])
         l2s[(r, r)] = np.array(l2s[(r, r)])
-        logs[(r, r)] = np.array(logs[(r, r)])
+        # logs[(r, r)] = np.array(logs[(r, r)])s
 
         means[(r, r)] = np.mean(css[(r, r)])
         stds[(r, r)] = np.std(css[(r, r)].flatten())
         means_l2[(r, r)] = np.mean(l2s[(r, r)])
         stds_l2[(r, r)] = np.std(l2s[(r, r)].flatten())
-        means_log[(r, r)] = np.mean(logs[(r, r)])
-        stds_log[(r, r)] = np.std(logs[(r, r)].flatten())
+        # means_log[(r, r)] = np.mean(logs[(r, r)])
+        # stds_log[(r, r)] = np.std(logs[(r, r)].flatten())
 
     within_run_css_xs = []
     between_run_css_xs = []
@@ -210,11 +213,11 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
         if ra == rb:
             within_run_css_xs += css[(ra, rb)].tolist()
             within_run_l2s_xs += l2s[(ra, rb)].tolist()
-            within_run_logs_xs += logs[(ra, rb)].tolist()
+            # within_run_logs_xs += logs[(ra, rb)].tolist()
         else:
             between_run_css_xs += css[(ra, rb)].tolist()
             between_run_l2s_xs += l2s[(ra, rb)].tolist()
-            between_run_logs_xs += logs[(ra, rb)].tolist()
+            # between_run_logs_xs += logs[(ra, rb)].tolist()
 
 
 

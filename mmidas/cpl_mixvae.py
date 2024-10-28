@@ -696,7 +696,7 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_val[-1]:.2f})", fontsize=20)
+                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})", fontsize=20)
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -712,7 +712,7 @@ class cpl_mixVAE:
                 if consensus_train[-1] >= good_enuf_consensus:
                     trained_model = (
                         self.folder
-                        + f"/model/cpl_mixVAE_model_before_pruning_A{A}_"
+                        + f"/model/cns_cpl_mixVAE_model_before_pruning_A{A}_"
                         + self.current_time
                         + ".pth"
                     )
@@ -724,6 +724,64 @@ class cpl_mixVAE:
                         },
                         trained_model,
                     )
+
+                    predicted_label = np.zeros((A, len(cs_train[0] * B)))
+                    for a in range(A):
+                        predicted_label[a] = np.concatenate(cs_train[a])
+
+                    # confusion matrix code
+                    c_agreement = []
+                    for a in range(A):
+                        pred_a = predicted_label[a, :]
+                        for b in range(a + 1, A):
+                            pred_b = predicted_label[b, :]
+                            armA_vs_armB = np.zeros((C, C))
+
+                            for samp in range(pred_a.shape[0]):
+                                armA_vs_armB[
+                                    pred_a[samp].astype(int), pred_b[samp].astype(int)
+                                ] += 1
+
+                            num_samp_arm = []
+                            for ij in range(C):
+                                sum_row = armA_vs_armB[ij, :].sum()
+                                sum_column = armA_vs_armB[:, ij].sum()
+                                num_samp_arm.append(max(sum_row, sum_column))
+
+                            armA_vs_armB = np.divide(
+                                armA_vs_armB,
+                                np.array(num_samp_arm),
+                                out=np.zeros_like(armA_vs_armB),
+                                where=np.array(num_samp_arm) != 0,
+                            )
+                            c_agreement.append(np.diag(armA_vs_armB))
+                            ind_sort = np.argsort(c_agreement[-1])
+                            plt.figure()
+                            plt.imshow(
+                                armA_vs_armB[:, ind_sort[::-1]][ind_sort[::-1]],
+                                cmap="binary",
+                            )
+                            plt.colorbar()
+                            plt.xlabel("arm_" + str(a), fontsize=20)
+                            plt.xticks(range(C), range(C))
+                            plt.yticks(range(C), range(C))
+                            plt.ylabel("arm_" + str(b), fontsize=20)
+                            plt.xticks([])
+                            plt.yticks([])
+                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})", fontsize=20)
+                            plt.savefig(
+                                self.folder
+                                + "/consensus_arm_"
+                                + str(a)
+                                + "_arm_"
+                                + str(b)
+                                + "_epoch_"
+                                + str(e)
+                                + ".png",
+                                dpi=600,
+                            )
+                            plt.close("all")
+
                     break
 
                 epoch_times.append(time.time() - t0)

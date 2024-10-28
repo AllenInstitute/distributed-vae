@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[str, Any]:
     from mmidas.model import generate
-    from mmidas._utils import confmat_mean, confmat_normalize, compute_confmat
+    from mmidas._utils import confmat_mean, confmat_normalize, compute_confmat, reassign
 
     C = fa.n_categories
     K = C
@@ -50,6 +50,9 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
     emp_log_b = []
     for a, pred_a in tqdm(enumerate(preds_a), total=len(preds_a)):
         for b, pred_b in enumerate(preds_b):
+            labels_a = pred_a.astype(int) - 1
+            labels_b = pred_b.astype(int) - 1
+
             _pm = np.zeros((C, C))  # performance matrix for arm a vs arm b
             _emp_l2 = np.zeros((C, C))  # empirical matrix for arm a vs arm b
             _emp_log = np.zeros((C, C))  # empirical matrix for arm a vs arm b
@@ -58,10 +61,10 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
                 i_b = cat_b.astype(int) - 1
                 _pm[i_a, i_b] += 1
                 _emp_l2[i_a, i_b] += np.sqrt((qca[i_a] - qcb[i_b]) ** 2)
-                _emp_log[i_a, i_b] += 0.5 * (
-                    qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
-                    + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
-                )
+                # _emp_log[i_a, i_b] += 0.5 * (
+                #     qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
+                #     + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
+                # )
             smp_cts = []
             for c in range(C):
                 smp_cts.append(max(_pm[c, :].sum(), _pm[:, c].sum()))
@@ -70,27 +73,33 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
             __consensus = np.divide(
                 _pm, smp_cts, out=np.zeros_like(_pm), where=smp_cts != 0
             )
-            _consensus = __consensus[:, inds_unpruned][inds_unpruned]
+            # _consensus = __consensus[:, inds_unpruned][inds_unpruned]
+            _consensus = confmat_normalize(compute_confmat(labels_a, labels_b, K))
             _dist_l2 = np.divide(
                 _emp_l2, smp_cts, out=np.zeros_like(_emp_l2), where=smp_cts != 0
             )[:, inds_unpruned][inds_unpruned]
-            _dist_log = np.divide(
-                _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
-            )[:, inds_unpruned][inds_unpruned]
+            # _dist_log = np.divide(
+            #     _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
+            # )[:, inds_unpruned][inds_unpruned]
 
             consensus.append(_consensus)
             consensus_min.append(np.min(np.diag(_consensus)))
-            consensus_mean.append(
-                1.0 - ((np.abs(preds_a[0] - preds_b[0]) > 0.0).sum() / preds_a.shape[1])
-            )
+            # consensus_mean.append(
+            #     1.0 - ((np.abs(preds_a[0] - preds_b[0]) > 0.0).sum() / preds_a.shape[1])
+            # )
+            consensus_mean.append(confmat_mean(reassign(_consensus)))
             pm.append(_pm[inds_unpruned][:, inds_unpruned])
             dist_l2.append(_dist_l2)
-            dist_log.append(_dist_log)
+            # dist_log.append(_dist_log)
             pm.append(_pm[inds_unpruned][:, inds_unpruned])
             emp_l2.append(_emp_l2[inds_unpruned][:, inds_unpruned])
             emp_log.append(_emp_log[inds_unpruned][:, inds_unpruned])
 
         for b, pred_b in enumerate(preds_a[a + 1 :]):
+
+            labels_a = pred_a.astype(int) - 1
+            labels_b = pred_b.astype(int) - 1
+
             _pm = np.zeros((C, C))
             _emp_l2 = np.zeros((C, C))
             _emp_log = np.zeros((C, C))
@@ -99,10 +108,10 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
                 i_b = samp_b.astype(int) - 1
                 _pm[i_a, i_b] += 1
                 _emp_l2[i_a, i_b] += np.sqrt((qca[i_a] - qcb[i_b]) ** 2)
-                _emp_log[i_a, i_b] += 0.5 * (
-                    qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
-                    + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
-                )
+                # _emp_log[i_a, i_b] += 0.5 * (
+                #     qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
+                #     + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
+                # )
 
             smp_cts = []
             for c in range(C):
@@ -110,29 +119,35 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
             smp_cts = np.array(smp_cts)
 
             inds_unpruned = np.where(np.isin(range(C), inds_prune) == False)[0]
-            _consensus = np.divide(
-                _pm, smp_cts, out=np.zeros_like(_pm), where=smp_cts != 0
-            )[:, inds_unpruned][inds_unpruned]
+            # _consensus = np.divide(
+            #     _pm, smp_cts, out=np.zeros_like(_pm), where=smp_cts != 0
+            # )[:, inds_unpruned][inds_unpruned]
+            _consensus = confmat_normalize(compute_confmat(labels_a, labels_b, K))
             _dist_l2 = np.divide(
                 _emp_l2, smp_cts, out=np.zeros_like(_emp_l2), where=smp_cts != 0
             )[:, inds_unpruned][inds_unpruned]
-            _dist_log = np.divide(
-                _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
-            )[:, inds_unpruned][inds_unpruned]
+            # _dist_log = np.divide(
+            #     _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
+            # )[:, inds_unpruned][inds_unpruned]
 
             consensus_a.append(_consensus)
             consensus_min_a.append(np.min(np.diag(_consensus)))
-            consensus_mean_a.append(
-                1.0 - ((np.abs(preds_a[0] - preds_a[1]) > 0.0).sum() / preds_a.shape[1])
-            )
+            # consensus_mean_a.append(
+            #     1.0 - ((np.abs(preds_a[0] - preds_a[1]) > 0.0).sum() / preds_a.shape[1])
+            # )
+            consensus_mean_a.append(confmat_mean(_consensus))
             pm_a.append(_pm[inds_unpruned][:, inds_unpruned])
             dist_l2_a.append(_dist_l2)
-            dist_log_a.append(_dist_log)
+            # dist_log_a.append(_dist_log)
             emp_l2_a.append(_emp_l2[inds_unpruned][:, inds_unpruned])
-            emp_log_a.append(_emp_log[inds_unpruned][:, inds_unpruned])
+            # emp_log_a.append(_emp_log[inds_unpruned][:, inds_unpruned])
 
     for a, pred_a in tqdm(enumerate(preds_b), total=len(preds_b)):
-        for b, pred_b in enumerate(preds_b[a + 1 :]):
+        for b, pred_b in enumerate(preds_b[a + 1:]):
+            labels_a = pred_a.astype(int) - 1
+            labels_b = pred_b.astype(int) - 1
+
+
             _pm = np.zeros((C, C))
             _emp_l2 = np.zeros((C, C))
             _emp_log = np.zeros((C, C))
@@ -141,10 +156,10 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
                 i_b = samp_b.astype(int) - 1
                 _pm[i_a, i_b] += 1
                 _emp_l2[i_a, i_b] += np.sqrt((qca[i_a] - qcb[i_b]) ** 2)
-                _emp_log[i_a, i_b] += 0.5 * (
-                    qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
-                    + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
-                )
+                # _emp_log[i_a, i_b] += 0.5 * (
+                #     qca[i_a] * np.log(qca[i_a] / (qcb[i_b] + eps))
+                #     + qcb[i_b] * np.log(qcb[i_b] / (qca[i_a] + eps))
+                # )
 
             smp_cts = []
             for c in range(C):
@@ -152,26 +167,28 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
             smp_cts = np.array(smp_cts)
 
             inds_unpruned = np.where(np.isin(range(C), inds_prune) == False)[0]
-            _consensus = np.divide(
-                _pm, smp_cts, out=np.zeros_like(_pm), where=smp_cts != 0
-            )[:, inds_unpruned][inds_unpruned]
+            # _consensus = np.divide(
+            #     _pm, smp_cts, out=np.zeros_like(_pm), where=smp_cts != 0
+            # )[:, inds_unpruned][inds_unpruned]
+            _consensus = confmat_normalize(compute_confmat(labels_a, labels_b, K))
             _dist_l2 = np.divide(
                 _emp_l2, smp_cts, out=np.zeros_like(_emp_l2), where=smp_cts != 0
             )[:, inds_unpruned][inds_unpruned]
-            _dist_log = np.divide(
-                _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
-            )[:, inds_unpruned][inds_unpruned]
+            # _dist_log = np.divide(
+            #     _emp_log, smp_cts, out=np.zeros_like(_emp_log), where=smp_cts != 0
+            # )[:, inds_unpruned][inds_unpruned]
 
             consensus_b.append(_consensus)
             consensus_min_b.append(np.min(np.diag(_consensus)))
-            consensus_mean_b.append(
-                1.0 - ((np.abs(preds_b[0] - preds_b[1]) > 0.0).sum() / preds_b.shape[1])
-            )
+            # consensus_mean_b.append(
+            #     1.0 - ((np.abs(preds_b[0] - preds_b[1]) > 0.0).sum() / preds_b.shape[1])
+            # )
+            consensus_mean_b.append(confmat_mean(_consensus))
             pm_b.append(_pm[inds_unpruned][:, inds_unpruned])
             dist_l2_b.append(_dist_l2)
-            dist_log_b.append(_dist_log)
+            # dist_log_b.append(_dist_log)
             emp_l2_b.append(_emp_l2[inds_unpruned][:, inds_unpruned])
-            emp_log_b.append(_emp_log[inds_unpruned][:, inds_unpruned])
+            # emp_log_b.append(_emp_log[inds_unpruned][:, inds_unpruned])
 
 
     consensus_vec = []
@@ -180,6 +197,7 @@ def evals2(fa: nn.Module, fb: nn.Module, dl: DataLoader, eps=1e-9) -> Mapping[st
             labels_a = preds_a[a].astype(int) - 1
             labels_b = preds_a[b].astype(int) - 1
             consensus_vec.append(confmat_mean(confmat_normalize(compute_confmat(labels_a, labels_b, K))))
+    print("consensus_mean_a:", consensus_mean_a)
 
     return {
         "consensus": consensus,

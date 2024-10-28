@@ -157,8 +157,10 @@ def get_weights(r: Run, d: Dataset) -> TrainedModelFile:
     saving_folder = c["paths"]["main_dir"] / c[unwrap_literal(d)]["saving_path"]
     trained_model_folder = c[unwrap_literal(d)]["trained_model"]
     saving_folder = str(saving_folder / trained_model_folder)
-    trained_models = glob.glob(saving_folder + "/model/cpl_mixVAE_model_before**")
+    # trained_models = glob.glob(saving_folder + "/model/cpl_mixVAE_model_before**")
+    trained_models = glob.glob(saving_folder + "/model/cpl_mixVAE_model_epoch**")
     if len(trained_models) == 0:
+        assert False
         trained_models = glob.glob(saving_folder + "/model/cpl_mixVAE_model_epoch**")
         
     if len(trained_models) == 1:
