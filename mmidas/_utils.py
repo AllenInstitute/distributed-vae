@@ -1,11 +1,16 @@
 from functools import reduce, wraps
-from itertools import product
+from itertools import product, starmap
 import warnings
 import time
 from typing import List
+import random
+import os
 
 import torch as th
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch._dynamo import OptimizedModule
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
@@ -20,6 +25,19 @@ def compose(*fs):
         return lambda *a, **kw: f(g(*a, **kw))
 
     return reduce(compose2, fs)
+
+
+def mapv(f, assocs):
+    return starmap(lambda k, v: (k, f(v)), assocs)
+
+
+def set_seeds(s: int) -> None:
+    if th.cuda.is_available():
+        th.cuda.manual_seed(s)
+    th.manual_seed(s)
+    np.random.seed(s)
+    random.seed(s)
+    os.environ["PYTHONHASHSEED"] = str(s)
 
 
 def time_function(f, *a, **kw):
@@ -57,7 +75,7 @@ def mk_masks(bias: th.Tensor) -> tuple[np.ndarray, np.ndarray]:
     return np.where(bias.cpu() != 0)[0], np.where(bias.cpu() == 0)[0]
 
 
-def compute_labels(probs):
+def classify(probs):
     return np.argmax(probs, axis=-1)
 
 
@@ -118,7 +136,9 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
     dataset = "mouse_smartseq"
     config = get_paths("mmidas.toml", dataset)
     data = load_data(config[dataset]["data_path"] / config[dataset]["anndata_file"])
-    train_loader, val_loader, all_loader = get_loaders(dataset=data["log1p"], batch_size=5000, seed=SEED)
+    train_loader, val_loader, all_loader = get_loaders(
+        dataset=data["log1p"], batch_size=5000, seed=SEED
+    )
     vaes = {r: load_vae(A, r, epochs, data["log1p"].shape[1]) for r in runs}
 
     loader = val_loader
@@ -134,8 +154,8 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
     logs = {}
     stds_log = {}
     means_log = {}
-    for (j, ra) in enumerate(runs):
-        for rb in runs[j + 1:]:
+    for j, ra in enumerate(runs):
+        for rb in runs[j + 1 :]:
             if ra != rb:
                 ev = evals2(vaes[ra], vaes[rb], loader)
                 i = 0
@@ -209,7 +229,7 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
     between_run_l2s_xs = []
     within_run_logs_xs = []
     between_run_logs_xs = []
-    for (ra, rb) in css:
+    for ra, rb in css:
         if ra == rb:
             within_run_css_xs += css[(ra, rb)].tolist()
             within_run_l2s_xs += l2s[(ra, rb)].tolist()
@@ -218,8 +238,6 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
             between_run_css_xs += css[(ra, rb)].tolist()
             between_run_l2s_xs += l2s[(ra, rb)].tolist()
             # between_run_logs_xs += logs[(ra, rb)].tolist()
-
-
 
     return {
         "consensus": {
@@ -254,10 +272,8 @@ def compute_consensus_statistics(A: int, runs: List[int], epochs: int):
                 "log/mean": np.mean(np.array(between_run_logs_xs)),
                 "log/std": np.std(np.array(between_run_logs_xs)),
             },
-        }
+        },
     }
-    
-
 
 
 # Note, all labels are assumed to be present in both arrays
@@ -292,3 +308,20 @@ def compare_state_dicts(model1: nn.Module, model2: nn.Module, rtol=1e-5, atol=1e
 
     print("The state dictionaries are identical within the specified tolerance.")
     return True
+
+
+def module(model):
+    if is_parallelized(model):
+        return module(model.module)
+    elif is_compiled(model):
+        return module(model._orig_mod)
+    else:
+        return model
+
+
+def is_parallelized(model):
+    return isinstance(model, (FSDP, DDP))
+
+
+def is_compiled(model):
+    return isinstance(model, OptimizedModule)

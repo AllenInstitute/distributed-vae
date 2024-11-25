@@ -1,39 +1,31 @@
 import argparse
-from copy import deepcopy
 import os
-import numpy as np
-import signal
-from pathlib import Path
-from itertools import starmap
-
-
-import torch as th
-from torch import optim
-from torch import cuda
-from torch import multiprocessing as mp
-from torch import distributed as dist
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    MixedPrecision,
-    BackwardPrefetch,
-    ShardingStrategy,
-    FullStateDictConfig,
-    StateDictType,
-)
 import random
-from mmidas.cpl_mixvae import cpl_mixVAE
-from mmidas.utils.tools import get_paths
-from mmidas.utils.dataloader import load_data, get_loaders
+import signal
+from copy import deepcopy
+from itertools import starmap
+from pathlib import Path
 
-from mmidas.nn_model import mixVAE_model
-
-import wandb
+import numpy as np
+import torch as th
+from torch import cuda
+from torch import distributed as dist
+from torch import multiprocessing as mp
+from torch import optim
+from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
 
 import fsdp_mnist as utils
+import wandb
+from mmidas._dist_utils import set_print, init_dist_env
+from mmidas._utils import mapv
+from mmidas.cpl_mixvae import cpl_mixVAE
+from mmidas.nn_model import mixVAE_model
+from mmidas.utils.dataloader import get_loaders, load_data
+from mmidas.utils.tools import get_paths
 
-
-def mapv(f, assocs):
-    return starmap(lambda k, v: (k, f(v)), assocs)
+SEED = 546
 
 
 def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
@@ -57,45 +49,27 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     saving_folder = str(
         config["paths"]["main_dir"] / config[sub_file]["saving_path"] / folder_name
     )
-    return dict(mapv(
-        str,
-        {
-            "data": data_file,
-            "saving": mk_saving_folder(saving_folder, count_existing(saving_folder)),
-            "aug": config["paths"]["main_dir"] / config[sub_file]["aug_model"],
-            "trained": config["paths"]["main_dir"] / config[sub_file]["trained_model"]
-            if trained
-            else "",
-        }.items(),
-    ))
+    return dict(
+        mapv(
+            str,
+            {
+                "data": data_file,
+                "saving": mk_saving_folder(
+                    saving_folder, count_existing(saving_folder)
+                ),
+                "aug": config["paths"]["main_dir"] / config[sub_file]["aug_model"],
+                "trained": config["paths"]["main_dir"]
+                / config[sub_file]["trained_model"]
+                if trained
+                else "",
+            }.items(),
+        )
+    )
 
 
-def set_seeds(s: int) -> None:
-    if cuda.is_available():
-        _set_seeds_cuda(s)
-    else:
-        _set_seeds(s)
-
-
-def _set_seeds(s: int):
-    th.manual_seed(s)
-    np.random.seed(s)
-    random.seed(s)
-    os.environ["PYTHONHASHSEED"] = str(s)
-
-
-def _set_seeds_cuda(s: int):
-    cuda.manual_seed(s)
-    _set_seeds(s)
-
-
-def main(r, ws, args):
-    SEED = 546
-
+def main(rank, ws, args):
     if ws > 1:
-        utils.set_print(r)  # prepend "[rank: r]" to print statements
-        utils.init_dist(r, ws, args.addr, args.port)
-        cuda.set_device(r)
+        init_dist_env(rank, ws, args.addr, args.port)
 
     # Load configuration paths
     files = parse_toml("mmidas.toml", "mouse_smartseq", args, trained=False)
@@ -105,10 +79,11 @@ def main(r, ws, args):
 
     # Load data
     data = load_data(datafile=files["data"])
-    print(f"# cells: {data['log1p'].shape[0]}, # genes: {data['log1p'].shape[1]}")
+    (N, D) = data["log1p"].shape
+    print(f"# cells: {N}, # genes: {D}")
 
     # Initialize the coupled mixVAE (MMIDAS) model
-    cplMixVAE = cpl_mixVAE(files["saving"], files["aug"], r)
+    cplMixVAE = cpl_mixVAE(files["saving"], files["aug"], rank)
 
     # Make data loaders for training, validation, and testing
     fold = 0  # fold index for cross-validation, for reproducibility purpose
@@ -117,7 +92,7 @@ def main(r, ws, args):
         seed=SEED,
         batch_size=args.batch_size,
         world_size=ws,
-        rank=r,
+        rank=rank,
         use_dist_sampler=args.use_dist_sampler,
     )
 
@@ -125,7 +100,7 @@ def main(r, ws, args):
     cplMixVAE.init_model(
         n_categories=args.n_categories,
         state_dim=args.state_dim,
-        input_dim=data["log1p"].shape[1],
+        input_dim=D,
         fc_dim=args.fc_dim,
         lowD_dim=args.latent_dim,
         x_drop=args.p_drop,
@@ -146,11 +121,11 @@ def main(r, ws, args):
     )
 
     # Train and save the model
-    run = (
-        wandb.init(project="mmidas-experiments", config=vars(args))
-        if args.use_wandb
-        else None
-    )
+    if args.use_wandb:
+        run = wandb.init(project="mmidas-experiments", config=vars(args))
+    else:
+        run = None
+
     if ws > 1:
         cplMixVAE.model = FSDP(
             cplMixVAE.model, auto_wrap_policy=utils.make_wrap_policy(20000)
@@ -168,21 +143,11 @@ def main(r, ws, args):
         max_prun_it=args.max_prun_it,
         run=run,
         ws=ws,
-        rank=r,
+        rank=rank,
     )
 
     if ws > 1:
         dist.destroy_process_group()
-
-
-# TODO
-def dist_main(args):
-    raise NotImplementedError
-
-
-# TODO
-def parse_args():
-    raise NotImplementedError
 
 
 # Run the main function when the script is executed
@@ -285,15 +250,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ws = args.gpus  # world size
-    if ws is None:
-        ws = cuda.device_count()
     num_workers = args.num_workers
-    if num_workers is None:
-        num_workers = utils.compute_workers()
 
     print(f"world size: {ws}")
     args.num_workers = num_workers
     if ws > 1:
+        raise NotImplementedError("distributed training is not yet supported")
         addr = utils.find_addr()
         port = utils.find_port(addr)
         prefetch_factor = args.prefetch_factor

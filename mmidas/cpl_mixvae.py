@@ -35,16 +35,14 @@ from .utils.data_tools import split_data_Kfold
 
 from mmidas._utils import (
     to_np,
-    compute_labels,
+    classify,
     compute_confmat,
     confmat_mean,
     confmat_normalize,
 )
 
-# last run: 35 (so start at 36)
 
-
-def bytes_to_mb(x):
+def to_mb(x):
     return x / 1e6
 
 
@@ -61,10 +59,6 @@ def compose(*fs):
 
 def mk_pbar(seq: Sequence, r, *fs) -> Sequence:
     return (lambda x: tqdm(x, total=len(x)) if is_master(r) else x)(compose(*fs)(seq))  # type: ignore
-
-
-def is_parallel(world_size):
-    return world_size > 1
 
 
 def print_train_loss(
@@ -100,12 +94,6 @@ def print_val_loss(val_loss, val_loss_rec, rank):
                 val_loss, val_loss_rec
             )
         )
-
-
-def unwrap[T](x: Optional[T]) -> T:
-    if x is None:
-        raise ValueError("error: expected non-None value")
-    return x
 
 
 def get_device(device: Optional[str | int] = None) -> th.device:
@@ -176,20 +164,22 @@ class cpl_mixVAE:
         self.folder = saving_folder
         self.aug_file = aug_file
         self.device = device
-        self.models: list[dict[str, nn.Module | Optimizer]] = []
 
-        self.device = get_device(device)
+        self.device = (
+            device
+            if device
+            else "cuda"
+            if th.cuda.is_available()
+            else "mps"
+            if th.backends.mps.is_available()
+            else "cpu"
+        )
 
         if aug_file:
             self.aug_model, self.aug_param, netA = mk_augmenter(aug_file, load_weights)
             self.netA = netA.to(self.device).eval()
         else:
             self.aug_model, self.aug_param, self.netA = None, None, None
-
-    # [[0.7, 0.2, 0.1], [0.5, 0.4, 0.1], [0.3, 0.3, 0.4]]
-    # -> [[1, 0, 0], [1, 0, 0], [0, 0, 1]]
-    # -> [0, 0, 2]
-    # -> [0.67, 0, 0.33]
 
     def init_model(
         self,
@@ -286,35 +276,6 @@ class cpl_mixVAE:
             self.init = True
             self.n_pr = 0
 
-    def append(self, c: VAEConfig):
-        model = mixVAE_model(
-            input_dim=c.input_dim,
-            fc_dim=c.fc_dim,
-            n_categories=c.n_categories,
-            state_dim=c.state_dim,
-            lowD_dim=c.lowD_dim,
-            x_drop=c.x_drop,
-            s_drop=c.s_drop,
-            n_arm=c.n_arm,
-            lam=c.lam,
-            lam_pc=c.lam_pc,
-            tau=c.tau,
-            beta=c.beta,
-            hard=c.hard,
-            variational=c.variational,
-            device=self.device,
-            eps=self.eps,
-            ref_prior=c.ref_prior,
-            momentum=c.momentum,
-            loss_mode=c.mode,
-        ).to(self.device)
-        optimizer = optim.Adam(model.parameters(), lr=c.lr)
-        if c.trained_model:
-            loaded_file = th.load(c.trained_model, map_location="cpu")
-            model.load_state_dict(loaded_file["model_state_dict"])
-            optimizer.load_state_dict(loaded_file["optimizer_state_dict"])
-        self.models.append({"model": model, "opt": optimizer})
-
     def load_model(self, trained_model):
         loaded_file = torch.load(trained_model, map_location="cpu")
         self.model.load_state_dict(loaded_file["model_state_dict"])
@@ -378,6 +339,7 @@ class cpl_mixVAE:
         c_l2_dists = []
         c_dists = []
         consensus_train = []
+        consensus_aug = []
         consensus_val = []
 
         validation_loss = np.zeros(E)
@@ -389,7 +351,7 @@ class cpl_mixVAE:
         f6_mask = th.ones((D_low, S + C))
 
         bias_mask = bias_mask.to(rank)
-        weight_mask = weight_mask.to(rank)% 10
+        weight_mask = weight_mask.to(rank) % 10
         fc_mu = fc_mu.to(rank)
         fc_sigma = fc_sigma.to(rank)
         f6_mask = f6_mask.to(rank)
@@ -457,7 +419,7 @@ class cpl_mixVAE:
                     ) = self.model.loss(
                         x_recs, [], [], xs, s_means, s_logvars, cs, c_smps, c_bin
                     )
-                    mem: float = bytes_to_mb(th.cuda.memory_allocated())
+                    mem: float = to_mb(th.cuda.memory_allocated())
                     _loss.backward()
                     self.optimizer.step()
 
@@ -478,7 +440,6 @@ class cpl_mixVAE:
                         probs_train[a].append(to_np(cs[a]))
                         probs_noaug[a].append(to_np(cs_noaug[a]))
 
-
                 if ws > 1:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
                     dist.all_reduce(loss_rec, op=dist.ReduceOp.SUM)
@@ -494,9 +455,13 @@ class cpl_mixVAE:
                     loss_recs[a].append(loss_rec[a].item() / loss[1].item())
 
                 labels = [
-                    np.ravel(compute_labels(np.array(probs_noaug[a]))) for a in range(A)
+                    np.ravel(classify(np.array(probs_noaug[a]))) for a in range(A)
+                ]
+                labels_aug = [
+                    np.ravel(classify(np.array(probs_train[a]))) for a in range(A)
                 ]
                 consensus = []
+                consensus_aug = []
                 for a in range(A):
                     for b in range(a + 1, A):
                         consensus.append(
@@ -506,10 +471,18 @@ class cpl_mixVAE:
                                 )
                             )
                         )
+                        consensus_aug.append(
+                            confmat_mean(
+                                confmat_normalize(
+                                    compute_confmat(labels_aug[a], labels_aug[b], C)
+                                )
+                            )
+                        )
                 consensus_train.append(np.mean(np.array(consensus)))
+                consensus_aug.append(np.mean(np.array(consensus_aug)))
                 _time = time.time() - t0
                 print(
-                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | train-cns: {consensus_train[-1]:.2f} | time: {_time:.2f} | avg time: {np.mean(epoch_times):.2f} | mem: {mem:.2f}  | ",
+                    f"epoch {e} | loss: {losses[-1]:.2f} | rec: {loss_recs[0][-1]:.2f} | joint: {loss_joints[-1]} | entropy: {c_ents[-1]:.2f} | distance: {c_dists[-1]:.2f} | l2 distance: {c_l2_dists[-1]:.2f} | train-cns: {consensus_train[-1]:.2f} | train-cns-aug: {consensus_aug[-1]:.2f} | time: {_time:.2f} | avg time: {np.mean(epoch_times):.2f} | mem: {mem:.2f}  | ",
                     end="",
                 )
 
@@ -524,6 +497,7 @@ class cpl_mixVAE:
                             "train/time": _time,
                             "train/mem": mem,
                             "train/consensus": consensus_train[-1],
+                            "train/consensus-aug": consensus_aug[-1],
                             **dict(
                                 map(
                                     lambda a: (f"train/rec-loss{a}", loss_recs[a][-1]),
@@ -590,7 +564,7 @@ class cpl_mixVAE:
                             for a in range(A):
                                 val_loss_rec += loss_rec[a].item() / D
                                 probs_test[a].append(to_np(cs[a]))
-                                
+
                     else:
                         batch_indx = 0
                         x, n = test_loader.dataset.tensors
@@ -619,10 +593,7 @@ class cpl_mixVAE:
                             val_loss_rec += loss_rec[a].item() / D
                             probs_test[a].append(to_np(cs[a]))
 
-                        
-                labels = [
-                    np.ravel(compute_labels(np.array(probs_test[a]))) for a in range(A)
-                ]
+                labels = [np.ravel(classify(np.array(probs_test[a]))) for a in range(A)]
                 consensus = []
                 for a in range(A):
                     for b in range(a + 1, A):
@@ -634,7 +605,6 @@ class cpl_mixVAE:
                             )
                         )
                 consensus_val.append(np.mean(np.array(consensus)))
-                # search finds list of actions. that's sequence transduction
 
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
@@ -705,7 +675,10 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})", fontsize=20)
+                            plt.title(
+                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})",
+                                fontsize=20,
+                            )
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -777,7 +750,10 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})", fontsize=20)
+                            plt.title(
+                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})",
+                                fontsize=20,
+                            )
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -1334,7 +1310,7 @@ class cpl_mixVAE:
         D = self.input_dim
         D_low = self.lowD_dim
         S = self.state_dim
-        B = unwrap(dl.batch_size)
+        B = dl.batch_size
 
         # Set the model to evaluation mode
         self.model.eval()

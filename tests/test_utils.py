@@ -10,7 +10,7 @@ from mmidas._utils import (
     compute_confmat_naive,
     confmat_normalize_naive,
     ecdf,
-    compute_labels,
+    classify,
     time_function
 )
 
@@ -98,11 +98,11 @@ def test_confmat_mean():
     )
 
 
-def test_compute_labels():
+def test_classify():
     x = np.array([[0.7, 0.2, 0.1], [0.4, 0.1, 0.5], [0.3, 0.6, 0.1]])
-    assert_expected_inline(str(compute_labels(x)), """[0 2 1]""")
+    assert_expected_inline(str(classify(x)), """[0 2 1]""")
     x = np.array([[0.7, 0.2, 0.1], [0.4, 0.1, 0.5], [0.3, 0.6, 0.1], [0.1, 0.1, 0.8]])
-    assert_expected_inline(str(compute_labels(x)), """[0 2 1 2]""")
+    assert_expected_inline(str(classify(x)), """[0 2 1 2]""")
 
 
 def test_confmat_vectorize_correctness():
