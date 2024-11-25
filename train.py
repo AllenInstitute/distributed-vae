@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import torch as th
-from torch import cuda
 from torch import distributed as dist
 from torch import multiprocessing as mp
 from torch import optim
@@ -130,7 +129,12 @@ def main(rank, ws, args):
         cplMixVAE.model = FSDP(
             cplMixVAE.model, auto_wrap_policy=utils.make_wrap_policy(20000)
         )
-    cplMixVAE.optimizer = optim.Adam(cplMixVAE.model.parameters(), lr=args.lr)
+    if args.optimizer == "adam":
+        cplMixVAE.optimizer = optim.Adam(cplMixVAE.model.parameters(), lr=args.lr)
+    elif args.optimizer == "adamw":
+        cplMixVAE.optimizer = optim.AdamW(cplMixVAE.model.parameters(), lr=args.lr)
+    else:
+        raise NotImplementedError(f"optimizer {args.optimizer} not implemented")
 
     cplMixVAE.train(
         train_loader=train_loader,
@@ -247,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--use_dist_sampler", default=False, action="store_true")
     parser.add_argument("--prefetch_factor", type=int, default=None)
+    parser.add_argument("--optimizer", type=str, default="adam")
     args = parser.parse_args()
 
     ws = args.gpus  # world size

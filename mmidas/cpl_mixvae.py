@@ -319,10 +319,10 @@ class cpl_mixVAE:
             rank = self.device
 
         A = self.n_arm
-        C = self.n_categories
-        E = n_epoch
+        K = self.n_categories
+        I = n_epoch
         D = self.input_dim
-        D_low = self.lowD_dim
+        E = self.lowD_dim
         B = train_loader.batch_size
         B_val = test_loader.batch_size
         Bs = len(train_loader)
@@ -342,13 +342,13 @@ class cpl_mixVAE:
         consensus_aug = []
         consensus_val = []
 
-        validation_loss = np.zeros(E)
-        validation_rec_loss = np.zeros(E)
-        bias_mask = th.ones(C)
-        weight_mask = th.ones((C, D_low))
-        fc_mu = th.ones((S, C + D_low))
-        fc_sigma = th.ones((S, C + D_low))
-        f6_mask = th.ones((D_low, S + C))
+        validation_loss = np.zeros(I)
+        validation_rec_loss = np.zeros(I)
+        bias_mask = th.ones(K)
+        weight_mask = th.ones((K, E))
+        fc_mu = th.ones((S, K + E))
+        fc_sigma = th.ones((S, K + E))
+        f6_mask = th.ones((E, S + K))
 
         bias_mask = bias_mask.to(rank)
         weight_mask = weight_mask.to(rank) % 10
@@ -359,7 +359,7 @@ class cpl_mixVAE:
         if self.init:
             print("training started")
             epoch_times = []
-            for e in trange(E):
+            for e in trange(I):
                 loss = th.zeros(2, device=rank)
                 loss_joint = th.zeros(1, device=rank)
                 loss_rec = th.zeros(A, device=rank)
@@ -381,10 +381,9 @@ class cpl_mixVAE:
                     tt = time.time()
 
                     with th.no_grad():
+                        xs = x.expand(A, -1, -1)
                         if self.aug_file:
-                            xs = self.netA(x.expand(A, -1, -1), True, 0.1)[1]
-                        else:
-                            xs = x.expand(A, -1, -1)
+                            xs = self.netA(xs, True, 0.1)[1]
 
                     if self.ref_prior:
                         c_bin = th.tensor(c_onehot[n, :], dtype=th.float, device=rank)
@@ -401,7 +400,7 @@ class cpl_mixVAE:
                         cs_train[a].append(
                             cs[a]
                             .cpu()
-                            .view(cs[a].size()[0], C)
+                            .view(cs[a].size()[0], K)
                             .argmax(dim=1)
                             .detach()
                             .numpy()
@@ -467,14 +466,14 @@ class cpl_mixVAE:
                         consensus.append(
                             confmat_mean(
                                 confmat_normalize(
-                                    compute_confmat(labels[a], labels[b], C)
+                                    compute_confmat(labels[a], labels[b], K)
                                 )
                             )
                         )
                         consensus_aug.append(
                             confmat_mean(
                                 confmat_normalize(
-                                    compute_confmat(labels_aug[a], labels_aug[b], C)
+                                    compute_confmat(labels_aug[a], labels_aug[b], K)
                                 )
                             )
                         )
@@ -600,7 +599,7 @@ class cpl_mixVAE:
                         consensus.append(
                             confmat_mean(
                                 confmat_normalize(
-                                    compute_confmat(labels[a], labels[b], C)
+                                    compute_confmat(labels[a], labels[b], K)
                                 )
                             )
                         )
@@ -636,13 +635,13 @@ class cpl_mixVAE:
                     for a in range(A):
                         predicted_label[a] = np.concatenate(cs_train[a])
 
-                    # confusion matrix code
+                    # confusion matrix
                     c_agreement = []
                     for a in range(A):
                         pred_a = predicted_label[a, :]
                         for b in range(a + 1, A):
                             pred_b = predicted_label[b, :]
-                            armA_vs_armB = np.zeros((C, C))
+                            armA_vs_armB = np.zeros((K, K))
 
                             for samp in range(pred_a.shape[0]):
                                 armA_vs_armB[
@@ -650,7 +649,7 @@ class cpl_mixVAE:
                                 ] += 1
 
                             num_samp_arm = []
-                            for ij in range(C):
+                            for ij in range(K):
                                 sum_row = armA_vs_armB[ij, :].sum()
                                 sum_column = armA_vs_armB[:, ij].sum()
                                 num_samp_arm.append(max(sum_row, sum_column))
@@ -670,13 +669,13 @@ class cpl_mixVAE:
                             )
                             plt.colorbar()
                             plt.xlabel("arm_" + str(a), fontsize=20)
-                            plt.xticks(range(C), range(C))
-                            plt.yticks(range(C), range(C))
+                            plt.xticks(range(K), range(K))
+                            plt.yticks(range(K), range(K))
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
                             plt.title(
-                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})",
+                                f"Epoch {e} |K|={K} (avg = {consensus_train[-1]:.2f})",
                                 fontsize=20,
                             )
                             plt.savefig(
@@ -691,7 +690,7 @@ class cpl_mixVAE:
                                 dpi=600,
                             )
                             plt.close("all")
-                if consensus_train[-1] >= good_enuf_consensus or e == E - 1:
+                if consensus_train[-1] >= good_enuf_consensus or e == I - 1:
                     trained_model = (
                         self.folder
                         + f"/model/cns_cpl_mixVAE_model_before_pruning_A{A}_"
@@ -717,7 +716,7 @@ class cpl_mixVAE:
                         pred_a = predicted_label[a, :]
                         for b in range(a + 1, A):
                             pred_b = predicted_label[b, :]
-                            armA_vs_armB = np.zeros((C, C))
+                            armA_vs_armB = np.zeros((K, K))
 
                             for samp in range(pred_a.shape[0]):
                                 armA_vs_armB[
@@ -725,7 +724,7 @@ class cpl_mixVAE:
                                 ] += 1
 
                             num_samp_arm = []
-                            for ij in range(C):
+                            for ij in range(K):
                                 sum_row = armA_vs_armB[ij, :].sum()
                                 sum_column = armA_vs_armB[:, ij].sum()
                                 num_samp_arm.append(max(sum_row, sum_column))
@@ -745,13 +744,13 @@ class cpl_mixVAE:
                             )
                             plt.colorbar()
                             plt.xlabel("arm_" + str(a), fontsize=20)
-                            plt.xticks(range(C), range(C))
-                            plt.yticks(range(C), range(C))
+                            plt.xticks(range(K), range(K))
+                            plt.yticks(range(K), range(K))
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
                             plt.title(
-                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})",
+                                f"Epoch {e} |c|={K} (avg = {consensus_train[-1]:.2f})",
                                 fontsize=20,
                             )
                             plt.savefig(
@@ -777,13 +776,13 @@ class cpl_mixVAE:
                 ax.set_xlabel("# epoch", fontsize=16)
                 ax.set_ylabel("loss value", fontsize=16)
                 ax.set_title(
-                    f"{label} loss of the cpl-mixVAE for K={C} and S={self.state_dim}"
+                    f"{label} loss of the cpl-mixVAE for K={K} and S={self.state_dim}"
                 )
                 ax.spines["right"].set_visible(False)
                 ax.spines["top"].set_visible(False)
                 ax.legend()
                 ax.figure.savefig(
-                    self.folder + f"/model/{filename}_A{A}_{C}_{self.current_time}.png"
+                    self.folder + f"/model/{filename}_A{A}_{K}_{self.current_time}.png"
                 )
                 plt.close()
 
@@ -888,7 +887,7 @@ class cpl_mixVAE:
                         z_encoder = (
                             z_category[a]
                             .cpu()
-                            .data.view(z_category[a].size()[0], C)
+                            .data.view(z_category[a].size()[0], K)
                             .detach()
                             .numpy()
                         )
@@ -901,7 +900,7 @@ class cpl_mixVAE:
                 pred_a = predicted_label[arm_a, :]
                 for arm_b in range(arm_a + 1, self.n_arm):
                     pred_b = predicted_label[arm_b, :]
-                    armA_vs_armB = np.zeros((C, C))
+                    armA_vs_armB = np.zeros((K, K))
 
                     for samp in range(pred_a.shape[0]):
                         armA_vs_armB[
@@ -909,7 +908,7 @@ class cpl_mixVAE:
                         ] += 1
 
                     num_samp_arm = []
-                    for ij in range(C):
+                    for ij in range(K):
                         sum_row = armA_vs_armB[ij, :].sum()
                         sum_column = armA_vs_armB[:, ij].sum()
                         num_samp_arm.append(max(sum_row, sum_column))
@@ -928,12 +927,12 @@ class cpl_mixVAE:
                     )
                     plt.colorbar()
                     plt.xlabel("arm_" + str(arm_a), fontsize=20)
-                    plt.xticks(range(C), range(C))
-                    plt.yticks(range(C), range(C))
+                    plt.xticks(range(K), range(K))
+                    plt.yticks(range(K), range(K))
                     plt.ylabel("arm_" + str(arm_b), fontsize=20)
                     plt.xticks([])
                     plt.yticks([])
-                    plt.title("|c|=" + str(C), fontsize=20)
+                    plt.title("|c|=" + str(K), fontsize=20)
                     plt.savefig(
                         self.folder
                         + "/consensus_"
@@ -1099,7 +1098,7 @@ class cpl_mixVAE:
 
                     for a in range(A):
                         train_recon[a, epoch] = train_loss_rec[a] / (batch_indx + 1)
-                        for c in range(C):
+                        for c in range(K):
                             train_loss_KL[a, c, epoch] = train_KLD_cont[a, c] / (
                                 batch_indx + 1
                             )
@@ -1308,7 +1307,7 @@ class cpl_mixVAE:
         C = self.n_categories
         N = len(dl.dataset)
         D = self.input_dim
-        D_low = self.lowD_dim
+        E = self.lowD_dim # embedding dimension
         S = self.state_dim
         B = dl.batch_size
 
@@ -1326,7 +1325,7 @@ class cpl_mixVAE:
         s_logvars = np.zeros((A, N, S))
         cs = np.zeros((A, N, C))
         c_smps = np.zeros((A, N, C))
-        x_lows = np.zeros((A, N, D_low))
+        x_lows = np.zeros((A, N, E))
         state_cat = np.zeros([A, N])
         prob_cat = np.zeros([A, N])
         predicted_label = np.zeros((A + self.ref_prior, N))

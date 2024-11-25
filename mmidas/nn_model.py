@@ -11,10 +11,6 @@ from torch.autograd import Variable
 from torch.nn import functional as F
 
 
-# 2 arm: 0, 5, 6
-# 3 arm: 0, 1, 3, 4 (need to find correct run for 0, 1)
-# 5 arm: 1, 3, 4, 5
-
 @dataclass
 class VAEConfig:
     n_categories: int = 92
@@ -81,8 +77,9 @@ def inv_var(p: th.Tensor, eps: float) -> th.Tensor:
         return (1 / (p.var(0) + eps)).repeat(p.shape[0], 1).sqrt()
     elif p.dim() == 3:
         var = p.var(dim=1, keepdim=True)  # Compute variance across the second dimension
-        return (1 / (var + eps)).sqrt()  # No need to repeat, as the shape is already 2x1x784
-
+        return (
+            1 / (var + eps)
+        ).sqrt()  # No need to repeat, as the shape is already 2x1x784
 
 
 def avg[T](x: Sequence[T]) -> T:
@@ -105,7 +102,7 @@ class mixVAE_model(nn.Module):
         decoder: decoder network.
         forward: module for forward path.
         state_changes: module for the continues variable analysis
-        reparam_trick: module for reparameterization.
+        reparameterize: module for reparameterization.
         sample_gumbel: samples by adding Gumbel noise.
         gumbel_softmax_sample: Gumbel-softmax sampling module
         gumbel_softmax: Gumbel-softmax distribution module
@@ -133,6 +130,7 @@ class mixVAE_model(nn.Module):
         momentum,
         ref_prior,
         loss_mode,
+        norm='batch'
     ):
         """
         Class instantiation.
@@ -350,7 +348,7 @@ class mixVAE_model(nn.Module):
             if self.varitional:
                 s_mean, s_var = self.intermed(y, a)
                 s_logvar = (s_var + self.eps).log()
-                s_smp = self.reparam_trick(s_mean, s_logvar)
+                s_smp = self.reparameterize(s_mean, s_logvar)
             else:
                 s_mean = self.intermed(y, a)
                 s_logvar = 0.0 * s_mean
@@ -404,7 +402,7 @@ class mixVAE_model(nn.Module):
 
             for i in range(len(state_var)):
                 s = mu.clone()
-                s[:, d_s] = self.reparam_trick(mu[:, d_s], log_var[:, d_s].log())
+                s[:, d_s] = self.reparameterize(mu[:, d_s], log_var[:, d_s].log())
                 recon_x[arm, i, :] = self.decoder(c, s, arm)
 
             state_smp_sorted[arm, :], sort_idx = var_state.sort()
@@ -412,7 +410,7 @@ class mixVAE_model(nn.Module):
 
         return recon_x, state_smp_sorted
 
-    def reparam_trick(self, mu, log_sigma):
+    def reparameterize(self, mu, log_sigma):
         """
         Generate samples from a normal distribution for reparametrization trick.
 
@@ -598,8 +596,8 @@ class mixVAE_model(nn.Module):
             [],
             lls,
         )
-    
-    def loss_naive(self, cs): # cs: (A, B, K)
+
+    def loss_naive(self, cs):  # cs: (A, B, K)
         assert not self.ref_prior
         assert len(cs) == self.n_arm
         c_dists = []
@@ -629,7 +627,6 @@ class mixVAE_model(nn.Module):
         dists = mean_sq_diff[triu_indices[0], triu_indices[1]]  # Shape: A*(A-1)/2
         return dists.mean()
 
-    
     # def loss_vectorize(self, cs: th.Tensor) -> th.Tensor:
     #     assert not self.ref_prior
     #     assert len(cs) == self.n_arm
@@ -640,10 +637,6 @@ class mixVAE_model(nn.Module):
     #         for b in range(a + 1, A):
     #             dists.append(th.norm(prec[a] - prec[b], p=2, dim=-1).pow(2).mean())
     #     return sum(dists) / len(dists)
-
-
-
-
 
 
 def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
@@ -681,6 +674,7 @@ def zinb_loss(rec_x, x_p, x_r, X, eps=1e-6):
     l_zinb = (loss_zero_counts + loss_nonzero_counts).mean()
 
     return l_zinb
+
 
 def mk_vae(
     C,
