@@ -184,6 +184,7 @@ def load_weights(m: nn.Module, f: str) -> None:
 
 
 class VAE(nn.Module):
+    # TODO: Add dropout
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, state_dim: int, cat_dim: int):
         super().__init__()
 
@@ -227,13 +228,13 @@ class VAE(nn.Module):
 
     def forward(self, x):
         x = self.encoder(x)
-        c = self.fc_cat(x)
-        s_mean = self.fc_state_mean(th.cat((x, c), dim=-1))
-        s_logvar = self.fc_state_logvar(th.cat((x, c), dim=-1))
+        c_scores = self.fc_cat(x)
+        s_mean = self.fc_state_mean(th.cat((x, c_scores), dim=-1))
+        s_logvar = self.fc_state_logvar(th.cat((x, c_scores), dim=-1))
         s = s_mean + th.randn_like(s_mean) * th.exp(0.5 * s_logvar)
-        x_low = self.fc_embed(th.cat((s, c), dim=-1))
+        x_low = self.fc_embed(th.cat((s, c_scores), dim=-1))
         x_rec = self.decoder(x_low)
-        return x_rec, c, s_mean, s_logvar
+        return x_rec, c_scores, s_mean, s_logvar
 
 
 class MMIDAS(nn.Module): ...
