@@ -183,7 +183,57 @@ def load_weights(m: nn.Module, f: str) -> None:
     m.load_state_dict(th.load(f, map_location="cpu")["model_state_dict"])
 
 
-class VAE(nn.Module): ...
+class VAE(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, state_dim: int, cat_dim: int):
+        super().__init__()
+
+        D = input_dim
+        H = hidden_dim
+        E = embed_dim
+        S = state_dim
+        K = cat_dim
+
+        self.encoder = nn.Sequential(
+            nn.Linear(D, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, E),
+        )
+
+        # x |-> c
+        self.fc_cat = nn.Linear(E, K)
+        # (x, c) |-> (s_mean, s_logvar)
+        self.fc_state_mean = nn.Linear(E + K, S)
+        self.fc_state_logvar = nn.Linear(E + K, S)
+        # (s, c) |-> x_low
+        self.fc_embed = nn.Linear(S + K, E)
+
+        self.decoder = nn.Sequential(
+            nn.Linear(E, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, H),
+            nn.ReLU(),
+            nn.Linear(H, D),
+        )
+
+    def forward(self, x):
+        x = self.encoder(x)
+        c = self.fc_cat(x)
+        s_mean = self.fc_state_mean(th.cat((x, c), dim=-1))
+        s_logvar = self.fc_state_logvar(th.cat((x, c), dim=-1))
+        s = s_mean + th.randn_like(s_mean) * th.exp(0.5 * s_logvar)
+        x_low = self.fc_embed(th.cat((s, c), dim=-1))
+        x_rec = self.decoder(x_low)
+        return x_rec, c, s_mean, s_logvar
 
 
 class MMIDAS(nn.Module): ...
