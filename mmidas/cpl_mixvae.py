@@ -35,7 +35,7 @@ from .utils.data_tools import split_data_Kfold
 
 from mmidas._utils import (
     to_np,
-    compute_labels,
+    classify,
     compute_confmat,
     confmat_mean,
     confmat_normalize,
@@ -511,7 +511,7 @@ class cpl_mixVAE:
 
                 # Yeganeh added this part ----------------------------------------------------
                 labels_aug = [
-                    np.ravel(compute_labels(np.array(probs_train[a]))) for a in range(A)
+                    np.ravel(classify(np.array(probs_train[a]))) for a in range(A)
                 ]
                 consensus = []
                 for a in range(A):
@@ -642,7 +642,7 @@ class cpl_mixVAE:
                                 )
 
                         
-                labels = [np.ravel(compute_labels(np.array(probs_noaug[a]))) for a in range(A)]
+                labels = [np.ravel(classify(np.array(probs_noaug[a]))) for a in range(A)]
                 consensus = []
                 for a in range(A):
                     for b in range(a + 1, A):
@@ -746,7 +746,7 @@ class cpl_mixVAE:
 
                         
                 labels = [
-                    np.ravel(compute_labels(np.array(probs_test[a]))) for a in range(A)
+                    np.ravel(classify(np.array(probs_test[a]))) for a in range(A)
                 ]
                 consensus = []
                 for a in range(A):
@@ -1579,7 +1579,7 @@ class cpl_mixVAE:
                         print(_cs[a])
                         probs_value[a].append((_cs[a].numpy()))
 
-            labels = [np.ravel(compute_labels(np.array(probs_value[a]))) for a in range(A)]
+            labels = [np.ravel(classify(np.array(probs_value[a]))) for a in range(A)]
             consensus = []
             for a in range(A):
                 for b in range(a + 1, A):

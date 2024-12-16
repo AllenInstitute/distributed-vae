@@ -1,21 +1,77 @@
 import glob
+import random
+import math
+from abc import ABC, abstractmethod
 from typing import Any, Mapping, Literal
 
 import torch as th
+from torch import Tensor
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
+from numpy import ndarray
 
 from mmidas.nn_model import mixVAE_model, mk_vae
 from mmidas.utils.tools import get_paths
 from mmidas._utils import unstable, mk_masks, to_np, parse_epoch
 
 
-# TODO
-def clr(prob, eps=1e-8):
-    assert th.all((0 <= prob) & (prob <= 1)) and th.sum(prob, dim=-1) == 1.0
+def generic_sum(xs, *args, **kwargs):
+    if isinstance(xs, Tensor):
+        return th.sum(xs, *args, **kwargs)
+    elif isinstance(xs, ndarray):
+        return np.sum(xs, *args, **kwargs)
+    else:
+        return sum(xs)
+    
+def sample_normal():
+    return math.sqrt(-2 * math.log(random.random())) * math.cos(2 * math.pi * random.random())
+    
+def generic_randn(shape, backend='torch', *args, **kwargs):
+    if backend == 'torch':
+        return th.randn(*shape, *args, **kwargs)
+    elif backend == 'numpy':
+        return np.random.randn(*shape)
+    elif backend == 'python':
+        return [sample_normal() for _ in range(shape[0])]
 
+    
+def generic_all(xs, *args, **kwargs):
+    if isinstance(xs, Tensor):
+        return th.all(xs, *args, **kwargs)
+    elif isinstance(xs, ndarray):
+        return np.all(xs, *args, **kwargs)
+    else:
+        return all(xs)
+
+def is_normalized(xs):
+    if isinstance(xs, Tensor):
+        return generic_sum(xs, dim=-1) == 1
+    elif isinstance(xs, ndarray):
+        return generic_sum(xs, axis=-1) == 1
+    else:
+        return generic_sum(xs) == 1
+
+# TODO
+def clr(prob: Tensor):
+    assert th.all((prob >= 0) & (prob <= 1)) and is_normalized(prob)
+
+def reparam(mean: Tensor, logvar: Tensor) -> Tensor:
+    return mean + th.randn_like(mean) * th.exp(0.5 * logvar)
+
+class Autoencoder(ABC):
+    @abstractmethod
+    def encode(self, x: Tensor) -> Tensor:
+        ...
+
+    @abstractmethod
+    def decode(self, x: Tensor) -> Tensor:
+        ...
+
+    @abstractmethod
+    def forward(self, x: Tensor) -> Tensor:
+        ...
 
 @unstable
 def generate(f: nn.Module, dl: DataLoader) -> Mapping[str, Any]:
@@ -226,6 +282,7 @@ class VAE(nn.Module):
             nn.Linear(H, D),
         )
 
+    # TODO: not correct
     def forward(self, x):
         x = self.encoder(x)
         c_scores = self.fc_cat(x)

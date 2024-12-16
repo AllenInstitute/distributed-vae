@@ -26,7 +26,6 @@ from mmidas.utils.tools import get_paths
 
 SEED = 546
 
-
 def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     def count_existing(saving_folder, acc=0):
         if not os.path.exists(saving_folder + f"_RUN{acc}"):
