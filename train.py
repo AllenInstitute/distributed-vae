@@ -14,9 +14,9 @@ from torch import optim
 from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
+# import wandb
 
 import fsdp_mnist as utils
-import wandb
 from mmidas._dist_utils import set_print, init_dist_env
 from mmidas._utils import mapv
 from mmidas.cpl_mixvae import cpl_mixVAE
@@ -25,6 +25,15 @@ from mmidas.utils.dataloader import get_loaders, load_data
 from mmidas.utils.tools import get_paths
 
 SEED = 546
+
+def get_files(pred):
+    return [f for f in os.listdir() if pred(f)]
+
+def count_files(pred):
+    return len(get_files(pred))
+
+def prefix_count(prefix):
+    return count_files(lambda f: f.startswith(prefix))
 
 def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     def count_existing(saving_folder, acc=0):
@@ -47,6 +56,10 @@ def parse_toml(toml_file: str, sub_file: str, args=None, trained=False):
     saving_folder = str(
         config["paths"]["main_dir"] / config[sub_file]["saving_path"] / folder_name
     )
+
+    # assert count_existing(saving_folder, 0) == prefix_count(saving_folder + "_RUN")
+    print("count_existing(saving_folder, 0):", count_existing(saving_folder, 0))
+    print("prefix_count(saving_folder + '_RUN'):", prefix_count(saving_folder + "_RUN"))
     return dict(
         mapv(
             str,

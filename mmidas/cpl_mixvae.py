@@ -31,7 +31,6 @@ import wandb
 
 from .augmentation.udagan import *
 from .nn_model import mixVAE_model, VAEConfig
-from .utils.data_tools import split_data_Kfold
 
 from mmidas._utils import (
     to_np,
@@ -390,7 +389,7 @@ class cpl_mixVAE:
         f6_mask = th.ones((D_low, S + C))
 
         bias_mask = bias_mask.to(rank)
-        weight_mask = weight_mask.to(rank)% 10
+        weight_mask = weight_mask.to(rank) % 10
         fc_mu = fc_mu.to(rank)
         fc_sigma = fc_sigma.to(rank)
         f6_mask = f6_mask.to(rank)
@@ -433,7 +432,9 @@ class cpl_mixVAE:
                         prior_c = 0.0
 
                     self.optimizer.zero_grad()
-                    x_recs, _, _, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(xs, self.temp, prior_c)
+                    x_recs, _, _, _, cs, _, c_smps, s_means, s_logvars, _ = self.model(
+                        xs, self.temp, prior_c
+                    )
 
                     # for a in range(A):
                     #     cs_train[a].append(
@@ -476,7 +477,6 @@ class cpl_mixVAE:
                         probs_train[a].append(to_np(cs[a]))
                         # probs_noaug[a].append(to_np(cs_noaug[a]))
 
-
                 if ws > 1:
                     dist.all_reduce(loss, op=dist.ReduceOp.SUM)
                     dist.all_reduce(loss_rec, op=dist.ReduceOp.SUM)
@@ -494,7 +494,7 @@ class cpl_mixVAE:
                 # labels = [
                 #     np.ravel(compute_labels(np.array(probs_noaug[a]))) for a in range(A)
                 # ]
-                
+
                 # Yeganeh changed this part
                 # consensus = []
                 # for a in range(A):
@@ -507,7 +507,6 @@ class cpl_mixVAE:
                 #             )
                 #         )
                 # consensus_train.append(np.mean(np.array(consensus)))
-
 
                 # Yeganeh added this part ----------------------------------------------------
                 labels_aug = [
@@ -525,7 +524,6 @@ class cpl_mixVAE:
                         )
                 consensus_aug.append(np.mean(np.array(consensus)))
                 # -----------------------------------------------------------------------------
-
 
                 _time = time.time() - t0
 
@@ -551,7 +549,7 @@ class cpl_mixVAE:
                             "train/time": _time,
                             "train/mem": mem,
                             # "train/consensus": consensus_train[-1],
-                             "train/consensus_aug": consensus_aug[-1],
+                            "train/consensus_aug": consensus_aug[-1],
                             **dict(
                                 map(
                                     lambda a: (f"train/rec-loss{a}", loss_recs[a][-1]),
@@ -561,13 +559,15 @@ class cpl_mixVAE:
                         }
                     )
 
-                                # validation
+                    # validation
                 self.model.eval()
                 with th.no_grad():
                     val_loss = 0.0
                     val_loss_rec = 0.0
                     if B_val > 1:
-                        for (batch_indx, (x, n)) in enumerate(train_loader):  # batch index, (data, data index)
+                        for batch_indx, (x, n) in enumerate(
+                            train_loader
+                        ):  # batch index, (data, data index)
                             x = x.to(rank)
                             n = n.to(int)
 
@@ -598,7 +598,7 @@ class cpl_mixVAE:
                             ) = self.model(
                                 x=xs, temp=self.temp, prior_c=prior_c, eval=True
                             )
-                            
+
                             for a in range(A):
                                 probs_noaug[a].append(to_np(cs[a]))
                                 cs_train[a].append(
@@ -609,7 +609,7 @@ class cpl_mixVAE:
                                     .detach()
                                     .numpy()
                                 )
-                                
+
                     else:
                         batch_indx = 0
                         x, n = train_loader.dataset.tensors
@@ -633,16 +633,17 @@ class cpl_mixVAE:
                         for a in range(A):
                             probs_noaug[a].append(to_np(cs[a]))
                             cs_train[a].append(
-                                    cs[a]
-                                    .cpu()
-                                    .view(cs[a].size()[0], C)
-                                    .argmax(dim=1)
-                                    .detach()
-                                    .numpy()
-                                )
+                                cs[a]
+                                .cpu()
+                                .view(cs[a].size()[0], C)
+                                .argmax(dim=1)
+                                .detach()
+                                .numpy()
+                            )
 
-                        
-                labels = [np.ravel(classify(np.array(probs_noaug[a]))) for a in range(A)]
+                labels = [
+                    np.ravel(classify(np.array(probs_noaug[a]))) for a in range(A)
+                ]
                 consensus = []
                 for a in range(A):
                     for b in range(a + 1, A):
@@ -667,7 +668,9 @@ class cpl_mixVAE:
                     val_loss = 0.0
                     val_loss_rec = 0.0
                     if B_val > 1:
-                        for (batch_indx, (x, n)) in enumerate(test_loader):  # batch index, (data, data index)
+                        for batch_indx, (x, n) in enumerate(
+                            test_loader
+                        ):  # batch index, (data, data index)
                             x = x.to(rank)
                             n = n.to(int)
 
@@ -715,7 +718,7 @@ class cpl_mixVAE:
                             for a in range(A):
                                 val_loss_rec += loss_rec[a].item() / D
                                 probs_test[a].append(to_np(cs[a]))
-                                
+
                     else:
                         batch_indx = 0
                         x, n = test_loader.dataset.tensors
@@ -744,10 +747,7 @@ class cpl_mixVAE:
                             val_loss_rec += loss_rec[a].item() / D
                             probs_test[a].append(to_np(cs[a]))
 
-                        
-                labels = [
-                    np.ravel(classify(np.array(probs_test[a]))) for a in range(A)
-                ]
+                labels = [np.ravel(classify(np.array(probs_test[a]))) for a in range(A)]
                 consensus = []
                 for a in range(A):
                     for b in range(a + 1, A):
@@ -759,7 +759,6 @@ class cpl_mixVAE:
                             )
                         )
                 consensus_val.append(np.mean(np.array(consensus)))
-                # search finds list of actions. that's sequence transduction
 
                 validation_rec_loss[e] = val_loss_rec / Bs_val / A
                 validation_loss[e] = val_loss / Bs_val
@@ -775,7 +774,7 @@ class cpl_mixVAE:
                         }
                     )
 
-                if self.save and (e > 0) and (e % 10000 == 0):
+                if self.save and (e > 0) and (e % 10 == 0):
                     trained_model = (
                         self.folder + f"/model/cpl_mixVAE_model_epoch_{e}.pth"
                     )
@@ -787,7 +786,8 @@ class cpl_mixVAE:
                         },
                         trained_model,
                     )
-                    predicted_label = np.zeros((A, len(cs_train[0] * B)))
+                    # breakpoint()
+                    predicted_label = np.zeros((A, len(cs_train[0][0] * B)))
                     for a in range(A):
                         predicted_label[a] = np.concatenate(cs_train[a])
 
@@ -832,7 +832,10 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f}, {mtx_diag:.2f})", fontsize=20)
+                            plt.title(
+                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f}, {mtx_diag:.2f})",
+                                fontsize=20,
+                            )
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -861,7 +864,7 @@ class cpl_mixVAE:
                         trained_model,
                     )
 
-                    predicted_label = np.zeros((A, len(cs_train[0] * B)))
+                    predicted_label = np.zeros((A, len(cs_train[0][0] * B)))
                     for a in range(A):
                         predicted_label[a] = np.concatenate(cs_train[a])
 
@@ -904,7 +907,10 @@ class cpl_mixVAE:
                             plt.ylabel("arm_" + str(b), fontsize=20)
                             plt.xticks([])
                             plt.yticks([])
-                            plt.title(f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})", fontsize=20)
+                            plt.title(
+                                f"Epoch {e} |c|={C} (avg = {consensus_train[-1]:.2f})",
+                                fontsize=20,
+                            )
                             plt.savefig(
                                 self.folder
                                 + "/consensus_arm_"
@@ -1585,9 +1591,7 @@ class cpl_mixVAE:
                 for b in range(a + 1, A):
                     consensus.append(
                         confmat_mean(
-                            confmat_normalize(
-                                compute_confmat(labels[a], labels[b], C)
-                            )
+                            confmat_normalize(compute_confmat(labels[a], labels[b], C))
                         )
                     )
             consensus_val = np.mean(np.array(consensus))

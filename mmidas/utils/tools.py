@@ -83,21 +83,14 @@ def logcpm(x, scaler=1e6) -> np.ndarray[Any, Any]:
     return np.log1p(normalize_cellxgene(x) * scaler)
 
 
-def print_attrs(name, obj):
-    print(name)
-    for key, val in obj.attrs.items():
-        print("    %s: %s" % (key, val))
-    return
-
-
 def reorder_genes(x, chunksize=1000, eps=1e-1):
     t_gene = x.shape[1]
     print(t_gene)
     g_std, g_bin_std = [], []
 
-    for iter in range(int(t_gene // chunksize) + 1):
-        ind0 = iter * chunksize
-        ind1 = np.min((t_gene, (iter + 1) * chunksize))
+    for i in range(int(t_gene // chunksize) + 1):
+        ind0 = i * chunksize
+        ind1 = np.min((t_gene, (i + 1) * chunksize))
         x_bin = np.where(x[:, ind0:ind1] > eps, 1, 0)
         g_std.append(np.std(x[:, ind0:ind1], axis=0))
         g_bin_std.append(np.std(x_bin, axis=0))
