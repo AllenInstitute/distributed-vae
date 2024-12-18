@@ -14,7 +14,7 @@ from torch import optim
 from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
-# import wandb
+import wandb
 
 import fsdp_mnist as utils
 from mmidas._dist_utils import set_print, init_dist_env
@@ -26,8 +26,8 @@ from mmidas.utils.tools import get_paths
 
 SEED = 546
 
-def get_files(pred):
-    return [f for f in os.listdir() if pred(f)]
+def get_files(pred=None):
+    return [f for f in os.listdir() if not pred or pred(f)]
 
 def count_files(pred):
     return len(get_files(pred))
